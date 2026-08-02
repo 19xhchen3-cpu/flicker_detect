@@ -498,6 +498,23 @@
         `Frame ${frameIndex}/${maxFrame}  ${(frameIndex / fps).toFixed(3)}s`;
       scheduleRefresh();
     });
+
+    stripeFrameSlider.addEventListener(
+      "wheel",
+      (event) => {
+        event.preventDefault();
+        const min = Number(stripeFrameSlider.min) || 0;
+        const max = Number(stripeFrameSlider.max) || 0;
+        const step = Math.max(1, Math.round((max - min) / 200));
+        const delta = event.deltaY < 0 ? step : -step;
+        const next = clamp(Number(stripeFrameSlider.value) + delta, min, max);
+        if (next !== Number(stripeFrameSlider.value)) {
+          stripeFrameSlider.value = String(next);
+          stripeFrameSlider.dispatchEvent(new Event("input"));
+        }
+      },
+      { passive: false },
+    );
   }
 
   buildPanel();
