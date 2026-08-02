@@ -8,6 +8,7 @@ import numpy as np
 
 CHUNK_SAMPLES = 1_000_000
 DISPLAY_LIMIT = 3000
+ROW_COUNT = 2160
 
 
 @dataclass
@@ -36,6 +37,9 @@ class FlickerResult:
     max_min_ratio: float
     num_samples: int
     num_frames: int
+    stripe_rows: list[float]
+    stripe_frame_index: int
+    row_count: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -58,6 +62,45 @@ class FlickerEngine:
                 f"frame interval ({max_exposure:g}s)."
             )
         return ""
+
+    def _compute_stripe_rows(
+        self,
+        params: FlickerParams,
+        dt: float,
+        num_samples: int,
+        frame_index: int,
+        max_exposure: float,
+        exposure_time: float,
+    ) -> list[float]:
+        row_starts_rel = np.arange(ROW_COUNT) * max_exposure / ROW_COUNT
+        row_starts = frame_index * max_exposure + row_starts_rel
+        starts = np.round(row_starts / dt).astype(np.int64)
+        ends = np.round((row_starts + exposure_time) / dt).astype(np.int64)
+        np.minimum(ends, num_samples, out=ends)
+
+        if num_samples <= 0 or int(np.max(ends)) <= int(np.min(starts)):
+            return [0.0] * ROW_COUNT
+
+        start_sample = int(np.min(starts))
+        end_sample = int(np.max(ends))
+        t = np.arange(start_sample, end_sample, dtype=np.float64) * dt
+
+        dc = params.dc_amplitude * np.abs(
+            np.sin(2.0 * math.pi * params.dc_frequency * t + params.dc_initial_phase)
+        )
+        ac = params.flicker_amplitude * np.abs(
+            np.sin(2.0 * math.pi * params.flicker_frequency * t + params.ac_initial_phase)
+        )
+        total = dc + ac
+
+        row_sums = np.zeros(ROW_COUNT, dtype=np.float64)
+        for row in range(ROW_COUNT):
+            row_start = int(starts[row]) - start_sample
+            row_end = int(ends[row]) - start_sample
+            if row_end > row_start:
+                row_sums[row] = float(np.sum(total[row_start:row_end]))
+
+        return np.round(row_sums, 3).tolist()
 
     def calculate(self, params: FlickerParams) -> FlickerResult:
         fps = params.video_frame_rate
@@ -135,6 +178,19 @@ class FlickerEngine:
         else:
             max_min_ratio = 0.0
 
+        if num_frames:
+            stripe_frame_index = min(num_frames - 1, max(0, num_frames // 2))
+        else:
+            stripe_frame_index = 0
+        stripe_rows = self._compute_stripe_rows(
+            params,
+            dt,
+            num_samples,
+            stripe_frame_index,
+            max_exposure,
+            exposure_time,
+        )
+
         return FlickerResult(
             time_disp=time_disp,
             i_dc_disp=i_dc_disp,
@@ -144,4 +200,7 @@ class FlickerEngine:
             max_min_ratio=max_min_ratio,
             num_samples=num_samples,
             num_frames=num_frames,
+            stripe_rows=stripe_rows,
+            stripe_frame_index=stripe_frame_index,
+            row_count=ROW_COUNT,
         )

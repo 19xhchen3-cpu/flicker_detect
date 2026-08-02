@@ -348,6 +348,69 @@
     ctx.fillText(formatTick(xMax), area.x + area.w, area.y + area.h + 18);
   }
 
+  function drawStripe(canvas, result) {
+    const ctx = prepareCanvas(canvas);
+    if (!ctx) return;
+
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+
+    const frameLabel = result && result.row_count
+      ? `Single Frame Stripes  frame=${result.stripe_frame_index}`
+      : "Single Frame Stripes";
+    ctx.fillStyle = "#1f2937";
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(frameLabel, 16, 24);
+
+    const rows = result ? result.stripe_rows : [];
+    if (!rows || rows.length === 0) {
+      ctx.fillStyle = "#6b7280";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No data", width / 2, height / 2);
+      return;
+    }
+
+    const margin = { left: 16, right: 16, top: 38, bottom: 20 };
+    const area = {
+      x: margin.left,
+      y: margin.top,
+      w: Math.max(1, width - margin.left - margin.right),
+      h: Math.max(1, height - margin.top - margin.bottom),
+    };
+
+    const min = Math.min(...rows);
+    const max = Math.max(...rows);
+    const range = max - min > 1e-12 ? max - min : 1;
+
+    const offscreen = document.createElement("canvas");
+    offscreen.width = 1;
+    offscreen.height = rows.length;
+    const offCtx = offscreen.getContext("2d");
+    const image = offCtx.createImageData(1, rows.length);
+
+    for (let y = 0; y < rows.length; y += 1) {
+      const normalized = (rows[y] - min) / range;
+      const value = Math.round(clamp(normalized, 0, 1) * 255);
+      const offset = y * 4;
+      image.data[offset] = value;
+      image.data[offset + 1] = value;
+      image.data[offset + 2] = value;
+      image.data[offset + 3] = 255;
+    }
+
+    offCtx.putImageData(image, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(offscreen, area.x, area.y, area.w, area.h);
+    ctx.strokeStyle = "#d8dee9";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(area.x, area.y, area.w, area.h);
+  }
+
   function drawAll(result) {
     window.requestAnimationFrame(() => {
       for (const def of PLOT_DEFS) {
@@ -367,6 +430,7 @@
           suffix,
         });
       }
+      drawStripe(document.querySelector('canvas[data-series="stripe"]'), result);
     });
   }
 

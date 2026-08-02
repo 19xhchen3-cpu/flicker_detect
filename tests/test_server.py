@@ -47,6 +47,7 @@ class FlickerServerTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(len(payload["result"]["frame_strength"]), 30)
+        self.assertEqual(len(payload["result"]["stripe_rows"]), 2160)
         self.assertGreater(payload["result"]["max_min_ratio"], 9.0)
 
 

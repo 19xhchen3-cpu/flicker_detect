@@ -16,6 +16,9 @@ class FlickerEngineTest(unittest.TestCase):
         self.assertEqual(len(result.frame_strength), 30)
         self.assertGreater(result.max_min_ratio, 9.0)
         self.assertLessEqual(len(result.i_total_disp), 3001)
+        self.assertEqual(result.row_count, 2160)
+        self.assertEqual(len(result.stripe_rows), 2160)
+        self.assertGreater(max(result.stripe_rows) - min(result.stripe_rows), 0)
 
     def test_validation_rejects_invalid_exposure(self) -> None:
         error = self.engine.validate(
