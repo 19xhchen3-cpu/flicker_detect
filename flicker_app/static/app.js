@@ -33,8 +33,8 @@
   const statusText = document.getElementById("statusText");
   const metricsText = document.getElementById("metricsText");
   const resetButton = document.getElementById("resetButton");
-  const stripeFrameSlider = document.getElementById("stripeFrameSlider");
-  const stripeFrameLabel = document.getElementById("stripeFrameLabel");
+  let stripeFrameSlider;
+  let stripeFrameLabel;
   const paramRows = new Map();
 
   function clamp(value, min, max) {
@@ -128,6 +128,35 @@
 
       paramRows.set(def.key, { row, range, number, def });
     }
+
+    const stripeRow = document.createElement("div");
+    stripeRow.className = "param-row";
+
+    const stripeLabel = document.createElement("label");
+    stripeLabel.textContent = "Stripe Frame";
+
+    const stripeRange = document.createElement("input");
+    stripeRange.type = "range";
+    stripeRange.className = "param-range";
+    stripeRange.min = "0";
+    stripeRange.max = "0";
+    stripeRange.value = "0";
+    stripeRange.step = "1";
+    stripeRange.disabled = true;
+    stripeRange.setAttribute("aria-label", "Stripe frame slider");
+
+    const stripeValue = document.createElement("span");
+    stripeValue.className = "stripe-frame-value";
+    stripeValue.textContent = "Frame 0/0  0.000s";
+
+    const stripeUnit = document.createElement("span");
+    stripeUnit.className = "unit";
+    stripeUnit.textContent = "";
+
+    stripeRow.append(stripeLabel, stripeRange, stripeValue, stripeUnit);
+    container.appendChild(stripeRow);
+    stripeFrameSlider = stripeRange;
+    stripeFrameLabel = stripeValue;
   }
 
   function afterParamChanged(key) {
@@ -234,16 +263,6 @@
       `Frame ${result.stripe_frame_index}/${maxFrame}  ` +
       `${(result.stripe_frame_index / fps).toFixed(3)}s`;
   }
-
-  stripeFrameSlider.addEventListener("input", () => {
-    const frameIndex = Number(stripeFrameSlider.value);
-    state.stripeFrameIndex = frameIndex;
-    const maxFrame = Number(stripeFrameSlider.max);
-    const fps = Number(state.params.video_frame_rate) || 1;
-    stripeFrameLabel.textContent =
-      `Frame ${frameIndex}/${maxFrame}  ${(frameIndex / fps).toFixed(3)}s`;
-    scheduleRefresh();
-  });
 
   resetButton.addEventListener("click", () => {
     for (const entry of paramRows.values()) {
@@ -469,7 +488,20 @@
     });
   }
 
+  function wireStripeFrameControl() {
+    stripeFrameSlider.addEventListener("input", () => {
+      const frameIndex = Number(stripeFrameSlider.value);
+      state.stripeFrameIndex = frameIndex;
+      const maxFrame = Number(stripeFrameSlider.max);
+      const fps = Number(state.params.video_frame_rate) || 1;
+      stripeFrameLabel.textContent =
+        `Frame ${frameIndex}/${maxFrame}  ${(frameIndex / fps).toFixed(3)}s`;
+      scheduleRefresh();
+    });
+  }
+
   buildPanel();
+  wireStripeFrameControl();
   updateExposureMaximum();
   drawAll(null);
   refresh();
