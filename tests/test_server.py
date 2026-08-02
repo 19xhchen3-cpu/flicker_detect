@@ -50,6 +50,23 @@ class FlickerServerTest(unittest.TestCase):
         self.assertEqual(len(payload["result"]["stripe_rows"]), 2160)
         self.assertGreater(payload["result"]["max_min_ratio"], 9.0)
 
+    def test_simulate_api_selects_stripe_frame(self) -> None:
+        connection = HTTPConnection("127.0.0.1", self.port)
+        connection.request(
+            "GET",
+            "/api/simulate?"
+            "video_frame_rate=30&exposure_time=0.001&simulation_time=1"
+            "&dc_amplitude=5&dc_frequency=0.25&dc_initial_phase=0"
+            "&flicker_amplitude=1&flicker_frequency=50&ac_initial_phase=1"
+            "&stripe_frame=29",
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read().decode("utf-8"))
+        connection.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["result"]["stripe_frame_index"], 29)
+
 
 if __name__ == "__main__":
     unittest.main()

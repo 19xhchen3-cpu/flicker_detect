@@ -140,6 +140,40 @@ body {
   grid-column: 1 / -1;
 }
 
+.stripe-plot {
+  display: flex;
+  flex-direction: column;
+}
+
+.stripe-plot .plot-canvas {
+  position: relative;
+  inset: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.stripe-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 16px;
+  background: #fafafa;
+  border-top: 1px solid var(--border);
+}
+
+.stripe-slider {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+#stripeFrameLabel {
+  min-width: 112px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .plot {
   position: relative;
   min-width: 0;

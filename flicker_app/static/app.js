@@ -27,11 +27,14 @@
     fetching: false,
     pending: false,
     requestSeq: 0,
+    stripeFrameIndex: null,
   };
 
   const statusText = document.getElementById("statusText");
   const metricsText = document.getElementById("metricsText");
   const resetButton = document.getElementById("resetButton");
+  const stripeFrameSlider = document.getElementById("stripeFrameSlider");
+  const stripeFrameLabel = document.getElementById("stripeFrameLabel");
   const paramRows = new Map();
 
   function clamp(value, min, max) {
@@ -182,6 +185,9 @@
       for (const [key, value] of Object.entries(state.params)) {
         query.set(key, String(value));
       }
+      if (state.stripeFrameIndex !== null) {
+        query.set("stripe_frame", String(state.stripeFrameIndex));
+      }
 
       const response = await fetch(`/api/simulate?${query.toString()}`);
       const payload = await response.json();
@@ -192,6 +198,7 @@
       }
 
       state.lastResult = payload.result;
+      syncStripeFrameControl(payload.result);
       drawAll(payload.result);
       setStatus(
         "Ready",
@@ -215,6 +222,29 @@
     metricsText.textContent = metrics;
   }
 
+  function syncStripeFrameControl(result) {
+    const maxFrame = Math.max(0, result.num_frames - 1);
+    stripeFrameSlider.disabled = maxFrame <= 0;
+    stripeFrameSlider.max = String(maxFrame);
+    stripeFrameSlider.value = String(clamp(result.stripe_frame_index, 0, maxFrame));
+    state.stripeFrameIndex = result.stripe_frame_index;
+
+    const fps = Number(state.params.video_frame_rate) || 1;
+    stripeFrameLabel.textContent =
+      `Frame ${result.stripe_frame_index}/${maxFrame}  ` +
+      `${(result.stripe_frame_index / fps).toFixed(3)}s`;
+  }
+
+  stripeFrameSlider.addEventListener("input", () => {
+    const frameIndex = Number(stripeFrameSlider.value);
+    state.stripeFrameIndex = frameIndex;
+    const maxFrame = Number(stripeFrameSlider.max);
+    const fps = Number(state.params.video_frame_rate) || 1;
+    stripeFrameLabel.textContent =
+      `Frame ${frameIndex}/${maxFrame}  ${(frameIndex / fps).toFixed(3)}s`;
+    scheduleRefresh();
+  });
+
   resetButton.addEventListener("click", () => {
     for (const entry of paramRows.values()) {
       const { def, range, number } = entry;
@@ -223,6 +253,11 @@
       range.value = String(valueToSlider(def.default, Number(number.min), Number(number.max)));
     }
     updateExposureMaximum();
+    state.stripeFrameIndex = null;
+    stripeFrameSlider.disabled = true;
+    stripeFrameSlider.max = "0";
+    stripeFrameSlider.value = "0";
+    stripeFrameLabel.textContent = "Frame 0/0  0.000s";
     refresh();
   });
 

@@ -30,8 +30,12 @@
         <div class="plot">
           <canvas class="plot-canvas" data-series="frame" aria-label="Frame strength"></canvas>
         </div>
-        <div class="plot plot-wide">
+        <div class="plot plot-wide stripe-plot">
           <canvas class="plot-canvas" data-series="stripe" aria-label="Single frame stripes"></canvas>
+          <div class="stripe-controls">
+            <input id="stripeFrameSlider" class="stripe-slider" type="range" min="0" max="0" value="0" step="1" disabled aria-label="Stripe frame slider">
+            <span id="stripeFrameLabel">Frame 0/0  0.000s</span>
+          </div>
         </div>
       </div>
       <footer class="status">

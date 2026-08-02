@@ -41,6 +41,18 @@ class FlickerEngineTest(unittest.TestCase):
         self.assertEqual(len(result.i_ac_disp), len(result.i_ac_disp))
         self.assertEqual(min(result.i_ac_disp), max(result.i_ac_disp))
 
+    def test_selected_stripe_frame(self) -> None:
+        params = FlickerParams()
+
+        first = self.engine.calculate(params, stripe_frame_index=0)
+        self.assertEqual(first.stripe_frame_index, 0)
+
+        last = self.engine.calculate(params, stripe_frame_index=29)
+        self.assertEqual(last.stripe_frame_index, 29)
+
+        clamped = self.engine.calculate(params, stripe_frame_index=999)
+        self.assertEqual(clamped.stripe_frame_index, 29)
+
 
 if __name__ == "__main__":
     unittest.main()

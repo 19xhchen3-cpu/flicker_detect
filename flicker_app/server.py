@@ -33,6 +33,16 @@ def _params_from_query(query: str) -> FlickerParams:
     return FlickerParams(**kwargs)
 
 
+def _stripe_frame_from_query(query: str) -> int | None:
+    raw = parse_qs(query)
+    if "stripe_frame" not in raw:
+        return None
+    try:
+        return int(raw["stripe_frame"][-1])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid value for stripe_frame.") from exc
+
+
 class FlickerRequestHandler(BaseHTTPRequestHandler):
     server_version = "FlickerSim/1.0"
 
@@ -54,6 +64,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
     def _handle_simulate(self, query: str) -> None:
         try:
             params = _params_from_query(query)
+            stripe_frame_index = _stripe_frame_from_query(query)
         except ValueError as exc:
             self._send_json(400, {"status": "error", "error": str(exc)})
             return
@@ -63,7 +74,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"status": "error", "error": error})
             return
 
-        result = ENGINE.calculate(params)
+        result = ENGINE.calculate(params, stripe_frame_index=stripe_frame_index)
         self._send_json(
             200,
             {

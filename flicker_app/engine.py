@@ -102,7 +102,11 @@ class FlickerEngine:
 
         return np.round(row_sums, 3).tolist()
 
-    def calculate(self, params: FlickerParams) -> FlickerResult:
+    def calculate(
+        self,
+        params: FlickerParams,
+        stripe_frame_index: int | None = None,
+    ) -> FlickerResult:
         fps = params.video_frame_rate
         max_exposure = 1.0 / fps
         exposure_time = min(params.exposure_time, max_exposure)
@@ -179,7 +183,10 @@ class FlickerEngine:
             max_min_ratio = 0.0
 
         if num_frames:
-            stripe_frame_index = min(num_frames - 1, max(0, num_frames // 2))
+            requested_frame = (
+                num_frames // 2 if stripe_frame_index is None else stripe_frame_index
+            )
+            stripe_frame_index = min(num_frames - 1, max(0, requested_frame))
         else:
             stripe_frame_index = 0
         stripe_rows = self._compute_stripe_rows(
