@@ -17,6 +17,21 @@ conda activate flicker
 python sim_tool\my_flicker.py
 ```
 
+也可以直接进入 `sim_tool` 目录执行：
+
+```powershell
+conda activate flicker
+python my_flicker.py
+```
+
+Windows 上不要使用 `python3` 启动本工具：`flicker` 环境只提供 `python.exe`，`python3` 可能会命中 MSYS2 或系统自带 Python，导致找不到 `numpy` 等环境依赖。
+
+如果不想手动激活环境，可以直接运行：
+
+```powershell
+run_sim.bat
+```
+
 ## 依赖
 
 依赖统一安装到 conda `flicker` 环境，版本记录在 `requirements.txt`。如需按清单补齐：
