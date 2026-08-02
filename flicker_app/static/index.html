@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flicker Simulation</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="app">
+    <aside class="panel">
+      <header class="panel-header">
+        <h1>Flicker Simulation</h1>
+        <button id="resetButton" type="button" title="Reset parameters">Reset</button>
+      </header>
+      <div id="parameterRows" class="params"></div>
+    </aside>
+
+    <section class="workspace">
+      <div id="plotGrid" class="plot-grid">
+        <div class="plot">
+          <canvas class="plot-canvas" data-series="dc" aria-label="Light DC"></canvas>
+        </div>
+        <div class="plot">
+          <canvas class="plot-canvas" data-series="ac" aria-label="Light AC"></canvas>
+        </div>
+        <div class="plot">
+          <canvas class="plot-canvas" data-series="total" aria-label="Light source"></canvas>
+        </div>
+        <div class="plot">
+          <canvas class="plot-canvas" data-series="frame" aria-label="Frame strength"></canvas>
+        </div>
+      </div>
+      <footer class="status">
+        <span id="statusText">Ready</span>
+        <span id="metricsText"></span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

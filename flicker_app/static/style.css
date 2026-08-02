@@ -1,0 +1,237 @@
+:root {
+  --border: #d8dee9;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --bg: #f3f4f6;
+  --panel: #ffffff;
+  --accent: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+  min-height: 600px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  min-width: 320px;
+  max-width: 380px;
+  overflow: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+
+.panel-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+#resetButton {
+  padding: 6px 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#resetButton:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}
+
+.params {
+  padding: 14px 16px 24px;
+}
+
+.param-row {
+  display: grid;
+  grid-template-columns: 150px minmax(90px, 1fr) 104px 36px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.param-row label {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--muted);
+}
+
+.param-range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.param-number {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 7px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.param-number:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.25);
+  border-color: var(--accent);
+}
+
+.unit {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.plot-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(220px, 1fr));
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.plot {
+  position: relative;
+  min-width: 0;
+  min-height: 220px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.plot-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.status {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+#statusText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#metricsText {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .app {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .panel {
+    width: 100%;
+    max-width: none;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-header {
+    position: static;
+  }
+
+  .plot-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(4, minmax(240px, 1fr));
+  }
+
+  .workspace {
+    min-height: 100vh;
+  }
+}
+
+@media (max-width: 600px) {
+  .param-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "label unit"
+      "range number";
+  }
+
+  .param-row label {
+    grid-area: label;
+  }
+
+  .param-range {
+    grid-area: range;
+  }
+
+  .param-number {
+    grid-area: number;
+  }
+
+  .unit {
+    grid-area: unit;
+  }
+
+  .status {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  #metricsText {
+    white-space: normal;
+  }
+}
