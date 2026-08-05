@@ -1,3 +1,4 @@
+/* 全局颜色变量，集中管理边框、文字和背景色。 */
 :root {
   --border: #d8dee9;
   --text: #1f2937;
@@ -7,15 +8,18 @@
   --accent: #2563eb;
 }
 
+/* 统一盒模型，避免边框改变尺寸。 */
 * {
   box-sizing: border-box;
 }
 
+/* 页面高度固定为视口高度。 */
 html,
 body {
   height: 100%;
 }
 
+/* 页面主体基础样式。 */
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -23,12 +27,14 @@ body {
   background: var(--bg);
 }
 
+/* 应用整体布局：左侧参数面板，右侧工作区。 */
 .app {
   display: flex;
   height: 100vh;
   min-height: 600px;
 }
 
+/* 参数面板样式。 */
 .panel {
   display: flex;
   flex-direction: column;
@@ -40,6 +46,7 @@ body {
   border-right: 1px solid var(--border);
 }
 
+/* 面板头部固定在滚动区域顶部。 */
 .panel-header {
   position: sticky;
   top: 0;
@@ -52,6 +59,7 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* 面板标题文字。 */
 .panel-header h1 {
   margin: 0;
   font-size: 16px;
@@ -59,6 +67,7 @@ body {
   letter-spacing: 0;
 }
 
+/* 重置按钮样式。 */
 #resetButton {
   padding: 6px 10px;
   color: var(--text);
@@ -75,10 +84,12 @@ body {
   border-color: #9ca3af;
 }
 
+/* 参数编辑区容器。 */
 .params {
   padding: 14px 16px 24px;
 }
 
+/* 单行参数控件：标签、滑块、数值和单位。 */
 .param-row {
   display: grid;
   grid-template-columns: 150px minmax(90px, 1fr) 104px 36px;
@@ -87,17 +98,20 @@ body {
   margin-bottom: 14px;
 }
 
+/* 参数标签文字。 */
 .param-row label {
   font-size: 12px;
   line-height: 1.25;
   color: var(--muted);
 }
 
+/* 参数滑块。 */
 .param-range {
   width: 100%;
   accent-color: var(--accent);
 }
 
+/* 数值输入框。 */
 .param-number {
   width: 100%;
   min-width: 0;
@@ -108,16 +122,19 @@ body {
   border-radius: 6px;
 }
 
+/* 数值输入框聚焦状态。 */
 .param-number:focus {
   outline: 2px solid rgba(37, 99, 235, 0.25);
   border-color: var(--accent);
 }
 
+/* 参数单位文字。 */
 .unit {
   font-size: 12px;
   color: var(--muted);
 }
 
+/* 右侧工作区布局。 */
 .workspace {
   display: flex;
   flex: 1;
@@ -125,6 +142,7 @@ body {
   min-width: 0;
 }
 
+/* 绘图网格：四张曲线图加一张通栏条纹图。 */
 .plot-grid {
   display: grid;
   flex: 1;
@@ -136,10 +154,12 @@ body {
   padding: 12px;
 }
 
+/* 通栏绘图容器。 */
 .plot-wide {
   grid-column: 1 / -1;
 }
 
+/* 当前条纹帧文字。 */
 .stripe-frame-value {
   min-width: 0;
   font-size: 12px;
@@ -150,6 +170,7 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 单个绘图容器。 */
 .plot {
   position: relative;
   min-width: 0;
@@ -160,6 +181,7 @@ body {
   border-radius: 8px;
 }
 
+/* Canvas 填满绘图容器。 */
 .plot-canvas {
   position: absolute;
   inset: 0;
@@ -168,6 +190,7 @@ body {
   height: 100%;
 }
 
+/* 底部状态栏。 */
 .status {
   display: flex;
   gap: 16px;
@@ -179,15 +202,18 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* 状态文字允许换行。 */
 #statusText {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
+/* 指标文字保持单行。 */
 #metricsText {
   white-space: nowrap;
 }
 
+/* 窄屏时切换为纵向布局。 */
 @media (max-width: 900px) {
   .app {
     flex-direction: column;
@@ -217,6 +243,7 @@ body {
   }
 }
 
+/* 手机宽度下调整参数行和状态栏。 */
 @media (max-width: 600px) {
   .param-row {
     grid-template-columns: minmax(0, 1fr) auto;

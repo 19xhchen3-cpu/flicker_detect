@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+"""频闪仿真计算引擎，负责生成光源曲线、帧强度和卷帘快门条纹。"""
+
 import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import numpy as np
 
+# 分块计算时的最大采样点数，避免一次生成过大的中间数组。
 CHUNK_SAMPLES = 1_000_000
+# 前端显示曲线时的最大点数，超出后按间隔抽样。
 DISPLAY_LIMIT = 3000
+# 4K 卷帘快门仿真使用的行数。
 ROW_COUNT = 2160
 
 
 @dataclass
 class FlickerParams:
+    """频闪仿真参数。"""
+
     video_frame_rate: float = 30.0
     exposure_time: float = 1e-3
     simulation_time: float = 1.0
@@ -29,6 +36,8 @@ DEFAULT_PARAMS = FlickerParams()
 
 @dataclass
 class FlickerResult:
+    """频闪仿真结果，包含曲线、帧强度、比值和单帧条纹。"""
+
     time_disp: list[float]
     i_dc_disp: list[float]
     i_ac_disp: list[float]
@@ -48,6 +57,7 @@ class FlickerResult:
 class FlickerEngine:
     @staticmethod
     def validate(params: FlickerParams) -> str:
+        """校验仿真参数，返回空字符串表示参数有效。"""
         if params.video_frame_rate <= 0.0:
             return "Video frame rate must be positive."
         if params.simulation_time <= 0.0:
@@ -72,6 +82,7 @@ class FlickerEngine:
         max_exposure: float,
         exposure_time: float,
     ) -> list[float]:
+        """计算指定帧内每一行曝光窗口的亮度累加值，形成卷帘条纹。"""
         row_starts_rel = np.arange(ROW_COUNT) * max_exposure / ROW_COUNT
         row_starts = frame_index * max_exposure + row_starts_rel
         starts = np.round(row_starts / dt).astype(np.int64)
@@ -107,10 +118,12 @@ class FlickerEngine:
         params: FlickerParams,
         stripe_frame_index: int | None = None,
     ) -> FlickerResult:
+        """执行仿真并返回曲线、帧强度和可选的单帧卷帘条纹。"""
         fps = params.video_frame_rate
         max_exposure = 1.0 / fps
         exposure_time = min(params.exposure_time, max_exposure)
 
+        # 用远高于帧率的采样率逼近连续光强，再按帧曝光窗口累加。
         sample_freq = fps * 1e5
         dt = 1.0 / sample_freq
         num_samples = int(math.floor(params.simulation_time / dt))
@@ -119,6 +132,7 @@ class FlickerEngine:
         downsample = max(1, num_samples // DISPLAY_LIMIT)
         display_positions = np.arange(0, num_samples, downsample)
 
+        # 每个视频帧对应一段曝光窗口，窗口内光强累加得到帧强度。
         frame_starts = np.round(
             np.arange(num_frames, dtype=np.float64) * max_exposure / dt
         ).astype(np.int64)
@@ -138,10 +152,12 @@ class FlickerEngine:
         frame_sums = np.zeros(num_frames, dtype=np.float64)
 
         two_pi = 2.0 * math.pi
+        # 分块生成正弦曲线，减少大时间序列对内存的占用。
         for chunk_start in range(0, num_samples, CHUNK_SAMPLES):
             chunk_end = min(num_samples, chunk_start + CHUNK_SAMPLES)
             t = np.arange(chunk_start, chunk_end, dtype=np.float64) * dt
 
+            # abs(sin) 模拟整流后的光强波形，光强基频为参数频率的 2 倍。
             dc = params.dc_amplitude * np.abs(
                 np.sin(two_pi * params.dc_frequency * t + params.dc_initial_phase)
             )
@@ -161,6 +177,7 @@ class FlickerEngine:
             i_total_disp.extend(total[rel].tolist())
 
             if num_frames:
+                # 按采样点所属帧做加权累加，得到每一帧的总光强。
                 sample_idx = np.arange(chunk_start, chunk_end, dtype=np.int64)
                 frame_idx = (
                     np.searchsorted(frame_starts, sample_idx, side="right") - 1
@@ -176,6 +193,7 @@ class FlickerEngine:
         rounded_frames = np.round(frame_sums, 3)
         valid_frames = frame_ends > frame_starts
         if num_frames and np.any(valid_frames):
+            # 最大/最小帧强度比用于快速观察频闪幅度。
             max_val = float(np.max(rounded_frames[valid_frames]))
             min_val = float(np.min(rounded_frames[valid_frames]))
             max_min_ratio = max_val / min_val if min_val > 1e-12 else 0.0
@@ -183,6 +201,7 @@ class FlickerEngine:
             max_min_ratio = 0.0
 
         if num_frames:
+            # 默认显示中间帧的条纹，用户也可通过 stripe_frame_index 指定。
             requested_frame = (
                 num_frames // 2 if stripe_frame_index is None else stripe_frame_index
             )

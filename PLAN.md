@@ -50,7 +50,7 @@
 
 ### 输入状态结构
 
-- `state.history`：按时间保存的逐块亮度历史，逻辑顺序为最旧帧到最新帧；建议物理存储使用环形缓存。
+- `state.history`：按时间保存的逐块亮度历史，逻辑顺序为最旧帧到最新帧；物理形状为 `[frame, block]`，物理存储使用环形缓存，容量复用 `min_frames`。
 - `state.valid_count`：当前历史缓存中的有效帧数。
 - `state.write_index`：环形数组指针；新帧从头部进入，旧帧从尾部退出。压入后计算时指向下一位置，压入前计算时指向当前写入位置；实现将统一采用压入后指向下一位置。
 - `state.block_count`：需要独立执行判定的块数量，每块检测互不依赖。
@@ -63,6 +63,7 @@
 | 参数 | 含义 |
 | --- | --- |
 | `min_frames` | 启动检测所需的最少有效历史帧数，控制冷启动长度和最早输出时机。 |
+| `history` | 历史缓存容量和诊断滑动窗口大小，复用 `min_frames`。 |
 | `group_size` | 一个周期组包含的帧数，决定预期混频周期、组内差分位置和相位对齐。 |
 | `min_match_groups` | 主导模式必须超过的最少匹配组数，控制周期证据的绝对数量要求。 |
 | `min_group_amp_ratio` | 最低有效振幅占满量程的比例，用于控制振幅门槛。 |
@@ -70,6 +71,8 @@
 | `same_pattern_ratio` | 主导符号模式所需达到的最低复现比例，控制周期模式的一致性要求。 |
 | `slope_max` | 一个周期首尾允许存在的最大平均变化率，用于剔除持续变亮、持续变暗和曝光趋势。 |
 | `max_group_amp_cv` | 不同周期之间允许的最大振幅方差系数，控制周期振幅稳定性要求。 |
+| `cols` | 画面分块的列数。 |
+| `rows` | 画面分块的行数。 |
 | `y_max` | 输入亮度的满量程值，用于把比例振幅门转换成绝对亮度差门槛。 |
 
 - 默认值待补充；`group_size` 为直接配置，分组参数通过二维查找表按频率与 fps 确定。
@@ -157,7 +160,7 @@
 - 算法取所有有效相位位置中的最大方差作为最严格的稳定性指标。
 - 若没有任何位置能参加统计，则该块按不可判定处理。
 - 参与统计的最低平均振幅门槛为 `min_group_amp`，通过阈值为 `max_group_amp_cv`；当前使用总体标准差。
-- 已确认：位置过滤条件为 `mean_amp[p] >= min_group_amp`；当前固定使用总体标准差。
+- 已确认：位置过滤条件为 `mean_amp[p] > min_group_amp`；当前固定使用总体标准差。
 - 已确认：`max_pos_cv > max_group_amp_cv` 时拒绝该块。
 
 ### 块最终判定
@@ -167,8 +170,8 @@
   - 主导模式组数超过最少匹配组数。
   - 有效相位位置的最大振幅方差不超过允许范围。
 - 判定通过后，设置对应的 `block_flags` 并累加 `flicker_block_num`。
-- 当前映射为 `flip_count / 有效组数 >= same_pattern_ratio`、`flip_count > min_match_groups`、`max_pos_cv <= max_group_amp_cv`。
-- 已确认：不可判定与无频闪在输出上一致，`block_flags` 为 0，`flicker_block_num` 不累加。
+- 当前映射为 `flip_count / 有效组数 > same_pattern_ratio`、`flip_count > min_match_groups`、`max_pos_cv > max_group_amp_cv` 时拒绝。
+- 已确认：不可判定与无频闪在输出上一致，`block_flags` 只有 0/1，`flicker_block_num` 不累加。
 
 ### 输出状态结构
 
@@ -183,7 +186,7 @@
 - 已确认：诊断量按块输出，每个块各输出一组。
 - `avg_ratio_diff = mean(max(raw_window) / min(raw_window))`
 - `avg_delta_diff = mean(max(raw_window) - min(raw_window))`
-- 窗口内最大值、最小值均为原始帧亮度；滑动窗口长度由可配置参数指定，参数名和默认值待补充。
+- 窗口内最大值、最小值均为原始帧亮度；滑动窗口长度复用 `history`，即 `min_frames`。
 
 ### 问题确认记录
 
@@ -193,8 +196,8 @@
 - `amp_matrix` / `sign_matrix` 使用 `[group, position]`。
 - `sign == 0` 参与符号等价类匹配；振幅在 `±1e-4f` 内视为 0，`1e-4f` 为绝对亮度容差。
 - 主导符号匹配候选组需同时通过 K-of-N 和闭合斜率门；`same_pattern_ratio` 分母为全部有效组。
-- CV 位置过滤以 `mean_amp[p] >= min_group_amp` 为准，当前使用总体标准差。
-- 不可判定与无频闪输出相同：`block_flags` 为 0，`flicker_block_num` 不累加。
+- CV 位置过滤以 `mean_amp[p] > min_group_amp` 为准，当前使用总体标准差。
+- 不可判定与无频闪输出相同：`block_flags` 只有 0/1，`flicker_block_num` 不累加。
 - 输出状态不包含目标驱动频率或视在频率。
 - 振幅门使用 `amp > min_group_amp`；闭合门剔除 `abs(slope) > slope_max`；CV 门拒绝 `max_pos_cv > max_group_amp_cv`；主导模式要求 `flip_count > min_match_groups`。
 - `write_index` 为环形数组指针；新帧头部进入、旧帧尾部退出；压入后计算指向下一位置，压入前计算指向当前位置。
@@ -206,9 +209,9 @@
 
 ### 仍待确认
 
-1. 算法参数的真实默认值；当前 `PARAMETER_TABLE` 使用可替换的占位值。
-2. 检测频率列表；当前配置脚本暂以 50 Hz 和 60 Hz 作为初始目标频率。
-3. `avg_ratio_diff` / `avg_delta_diff` 滑动窗口参数名；当前实现中暂用 `diff_window_size`，值等于 `group_size`。
+1. 算法参数的真实默认值；当前 `PARAMETER_TABLE` 已改为全 0 待填写矩阵。
+2. 参数值填写；目标频率已配置为 50/60/100/120/125/200/240/500 Hz，矩阵中参数仍为 0。
+3. `avg_ratio_diff` / `avg_delta_diff` 滑动窗口参数名；当前实现使用 `diff_window_size`，值等于 `history = min_frames`。
 
 ### 后续实现计划
 
@@ -218,12 +221,46 @@
   - 按目标驱动频率 `fd` 计算光强频率 `F = 2fd`、视在频率 `fa` 和整数 `group_size`
   - `build_group_size_table()` 生成 `(fps, 目标频率) -> group_size` 表
   - `lookup_detector_parameters(fps, 目标频率)` 查表获取检测参数
+  - `PARAMETER_TABLE` 按 fps 和目标频率生成全 0 参数矩阵，供后续填写
+  - 参数包含 `cols` 和 `rows`，`block_count = cols × rows`
   - 已增加 `tests/test_detector_config.py`
 - 补齐参数类型、默认值和参数校验规则。
 - 确认目标频率列表和真实参数默认值后，定义输入状态、中间矩阵和输出状态的数据契约。
 - 实现分组、特征构建、K-of-N、闭合斜率、主导符号模式、CV 和块最终判定。
 - 用仿真引擎生成已知频闪数据，对检测模块做自动化验证。
 - 再实现置信度模型和运动场景方案。
+
+### 前置数据转换模块计划
+
+- 目标：读取指定地址的视频，灰度化，按参数表中的 `cols` / `rows` 分块压缩，增加可调 gamma 提亮，输出逐帧块亮度供检测缓存使用。
+- 输入：视频地址、fps/时间基准、`cols`、`rows`、gamma 提亮力度。
+- 输出：每帧包含 `frame_id` 和一个块亮度数组，块亮度建议按行优先展开为 `[rows * cols]`，与 `state.history` 的 `[frame, block]` 对齐。
+- `frame_id` 作为算法使用的帧索引，后续周期分组按 `frame_id` 对齐，而不是依赖环形缓存的物理位置。
+- `frame_id` 由前置模块按视频读取顺序自动分配，建议从 0 开始递增。
+- 处理流程：
+  1. 使用 `cv2.VideoCapture` 打开视频并读取 fps、帧数、宽高等元数据。
+  2. 将 BGR 帧转换为灰度图。
+  3. 执行 gamma 提亮：`output = y_max × (input / y_max) ^ gamma`，`gamma < 1` 时提亮。
+  4. 按 `rows × cols` 网格分块，计算每个块的平均亮度。
+  5. 输出块亮度数组和视频元数据。
+- 依赖：需要引入 `opencv-python` 并写入 `requirements.txt`。
+- 待确认：
+  - gamma 参数是全局管道参数还是进入二维参数表。
+  - gamma 应用在分块平均之前还是之后。
+  - “压缩”使用精确分块平均，还是允许 `cv2.resize` 的插值近似。
+  - 输出块数组使用 `[rows, cols]` 还是 `[rows × cols]`。
+
+### 前置数据转换模块风险与缺口
+
+- 输入位深未定义：当前 `y_max = 16383` 对应 14 bit，但视频可能是 8/10/12/16 bit 或浮点格式。前置模块需要在 gamma 和分块前明确位深，并统一缩放或转换到检测使用的亮度尺度。
+- 时间基准不完整：仅输出 `frame_id` 不足以处理变帧率和丢帧；建议同时输出真实时间戳，并在检测端使用 `frame_id` 做分组、时间戳做时间基准校验。
+- 读取失败语义未定义：`cv2.read()` 返回失败、视频损坏、编码不支持或中途断流时，模块应明确是跳过、中止还是标记无效帧，不能静默破坏帧序列。
+- 分块边界未定义：当宽高不能被 `cols` / `rows` 整除时，边缘块的大小如何分配、是否裁剪或补齐，需要明确。
+- 参数校验不足：`cols`、`rows`、gamma、视频路径都必须校验；`cols × rows` 应与检测参数的 `block_count` 一致。
+- gamma 边界未定义：需要明确 gamma 取值范围、0 值处理、输入越界裁剪，以及 `gamma = 1` 时是否严格保持原亮度。
+- 内存模型未定义：建议使用逐帧生成器流式输出，避免一次把整段视频读入内存；`VideoCapture` 必须在结束时释放。
+- 元数据契约未定义：建议返回 `fps`、帧数、宽高、位深、时间基准、`cols`、`rows`、gamma 等元数据，供检测模块校验和记录。
+- 自动测试缺口：需要覆盖 8/10/12/14/16 bit、非整除分块、gamma 单调性、`frame_id` 连续性、空视频、损坏视频和错误路径。
 
 ## 必须约束
 

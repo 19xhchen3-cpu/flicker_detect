@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""频闪仿真 HTTP 服务的集成测试。"""
+
 import json
 import threading
 import unittest
@@ -9,8 +11,11 @@ from flicker_app.server import create_server
 
 
 class FlickerServerTest(unittest.TestCase):
+    """在临时端口启动服务，验证静态页面和仿真 API。"""
+
     @classmethod
     def setUpClass(cls) -> None:
+        # 使用端口 0 让系统自动分配可用端口。
         cls.server = create_server("127.0.0.1", 0)
         cls.port = cls.server.server_address[1]
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -22,6 +27,7 @@ class FlickerServerTest(unittest.TestCase):
         cls.server.server_close()
 
     def test_index_page(self) -> None:
+        """根路径应返回仿真页面 HTML。"""
         connection = HTTPConnection("127.0.0.1", self.port)
         connection.request("GET", "/")
         response = connection.getresponse()
@@ -32,6 +38,7 @@ class FlickerServerTest(unittest.TestCase):
         self.assertIn("Flicker Simulation", body)
 
     def test_simulate_api(self) -> None:
+        """仿真 API 应返回帧强度和条纹数据。"""
         connection = HTTPConnection("127.0.0.1", self.port)
         connection.request(
             "GET",
@@ -51,6 +58,7 @@ class FlickerServerTest(unittest.TestCase):
         self.assertGreater(payload["result"]["max_min_ratio"], 9.0)
 
     def test_simulate_api_selects_stripe_frame(self) -> None:
+        """stripe_frame 查询参数应控制返回的条纹帧。"""
         connection = HTTPConnection("127.0.0.1", self.port)
         connection.request(
             "GET",

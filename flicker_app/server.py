@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""频闪仿真 HTTP 服务，提供静态页面和仿真 API。"""
+
 import json
 from dataclasses import fields
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +13,7 @@ from .engine import DEFAULT_PARAMS, FlickerEngine, FlickerParams
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 ENGINE = FlickerEngine()
 
+# 静态资源后缀到 Content-Type 的映射。
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -21,6 +24,7 @@ MIME_TYPES = {
 
 
 def _params_from_query(query: str) -> FlickerParams:
+    """从 URL 查询参数构造 FlickerParams，非法数值会抛出 ValueError。"""
     raw = parse_qs(query)
     kwargs: dict[str, float] = {}
     for field in fields(FlickerParams):
@@ -34,6 +38,7 @@ def _params_from_query(query: str) -> FlickerParams:
 
 
 def _stripe_frame_from_query(query: str) -> int | None:
+    """读取可选的 stripe_frame 查询参数，未提供时返回 None。"""
     raw = parse_qs(query)
     if "stripe_frame" not in raw:
         return None
@@ -47,9 +52,11 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
     server_version = "FlickerSim/1.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
+        """关闭默认请求日志，避免终端输出被高频仿真请求刷屏。"""
         return
 
     def do_GET(self) -> None:
+        """处理 GET 请求：API 路由或静态资源。"""
         parsed = urlparse(self.path)
         if parsed.path == "/api/simulate":
             self._handle_simulate(parsed.query)
@@ -62,6 +69,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
         self._send_static(parsed.path.lstrip("/"))
 
     def _handle_simulate(self, query: str) -> None:
+        """处理 /api/simulate，返回仿真结果或参数错误。"""
         try:
             params = _params_from_query(query)
             stripe_frame_index = _stripe_frame_from_query(query)
@@ -88,6 +96,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _send_static(self, relative: str) -> None:
+        """发送 static 目录下的静态文件，并防止路径越界。"""
         root = STATIC_DIR.resolve()
         path = (root / relative).resolve()
 
@@ -114,6 +123,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_json(self, status: int, payload: dict[str, object]) -> None:
+        """以 JSON 形式返回响应。"""
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -123,6 +133,7 @@ class FlickerRequestHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
+    """创建线程化 HTTP 服务，默认监听本机 8765 端口。"""
     server = ThreadingHTTPServer((host, port), FlickerRequestHandler)
     server.daemon_threads = True
     return server

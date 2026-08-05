@@ -1,1 +1,1 @@
-"""Flicker detection algorithm and detector configuration."""
+"""频闪检测算法与检测配置包。"""

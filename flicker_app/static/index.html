@@ -1,13 +1,16 @@
 <!doctype html>
+<!-- 频闪仿真页面：左侧为参数编辑区，右侧为曲线和卷帘条纹展示区。 -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flicker Simulation</title>
+  <!-- 页面样式表。 -->
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main class="app">
+    <!-- 参数面板：由 app.js 动态生成所有参数控件。 -->
     <aside class="panel">
       <header class="panel-header">
         <h1>Flicker Simulation</h1>
@@ -16,24 +19,31 @@
       <div id="parameterRows" class="params"></div>
     </aside>
 
+    <!-- 工作区：四张曲线图、一张卷帘条纹图和底部状态栏。 -->
     <section class="workspace">
       <div id="plotGrid" class="plot-grid">
+        <!-- DC 光强曲线。 -->
         <div class="plot">
           <canvas class="plot-canvas" data-series="dc" aria-label="Light DC"></canvas>
         </div>
+        <!-- AC 光强曲线。 -->
         <div class="plot">
           <canvas class="plot-canvas" data-series="ac" aria-label="Light AC"></canvas>
         </div>
+        <!-- 合成光源曲线。 -->
         <div class="plot">
           <canvas class="plot-canvas" data-series="total" aria-label="Light source"></canvas>
         </div>
+        <!-- 每帧强度曲线。 -->
         <div class="plot">
           <canvas class="plot-canvas" data-series="frame" aria-label="Frame strength"></canvas>
         </div>
+        <!-- 单帧卷帘快门条纹图。 -->
         <div class="plot plot-wide">
           <canvas class="plot-canvas" data-series="stripe" aria-label="Single frame stripes"></canvas>
         </div>
       </div>
+      <!-- 状态和指标信息。 -->
       <footer class="status">
         <span id="statusText">Ready</span>
         <span id="metricsText"></span>
@@ -41,6 +51,7 @@
     </section>
   </main>
 
+  <!-- 前端交互逻辑。 -->
   <script src="/app.js"></script>
 </body>
 </html>

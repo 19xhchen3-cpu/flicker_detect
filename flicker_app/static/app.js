@@ -1,6 +1,8 @@
 (() => {
+  // 使用严格模式避免隐式全局变量。
   "use strict";
 
+  // 仿真参数定义，驱动左侧滑块、数值框和仿真请求。
   const PARAM_DEFS = [
     { key: "video_frame_rate", label: "Video Frame Rate", unit: "fps", min: 1, max: 240, step: 1, default: 30, decimals: 2 },
     { key: "exposure_time", label: "Exposure Time", unit: "s", min: 0.00001, max: 0.033, step: 0.0001, default: 0.001, decimals: 5, dynamicMax: true },
@@ -13,6 +15,7 @@
     { key: "ac_initial_phase", label: "AC Initial Phase", unit: "rad", min: 0, max: 6.2832, step: 0.05, default: 1, decimals: 2 },
   ];
 
+  // 曲线定义：标题、颜色和对应结果字段。
   const PLOT_DEFS = [
     { key: "dc", title: "Light DC", color: "#c2410c", series: "i_dc_disp" },
     { key: "ac", title: "Light AC", color: "#15803d", series: "i_ac_disp" },
@@ -20,6 +23,7 @@
     { key: "frame", title: "Frame Strength", color: "#be123c", series: "frame_strength", markers: true },
   ];
 
+  // 前端运行状态：参数、最近结果、防抖刷新和请求序号。
   const state = {
     params: {},
     lastResult: null,
@@ -30,6 +34,7 @@
     stripeFrameIndex: null,
   };
 
+  // 页面 DOM 引用。
   const statusText = document.getElementById("statusText");
   const metricsText = document.getElementById("metricsText");
   const resetButton = document.getElementById("resetButton");
@@ -37,23 +42,28 @@
   let stripeFrameLabel;
   const paramRows = new Map();
 
+  // 将数值限制在 [min, max] 区间内。
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
 
+  // 按指定小数位格式化数值。
   function formatNumber(value, decimals) {
     return String(Number(value.toFixed(decimals)));
   }
 
+  // 滑块 0-10000 映射到参数数值区间。
   function sliderToValue(sliderValue, min, max) {
     return min + (sliderValue / 10000) * (max - min);
   }
 
+  // 参数数值反向映射回滑块位置。
   function valueToSlider(value, min, max) {
     if (max === min) return 0;
     return Math.round(((clamp(value, min, max) - min) / (max - min)) * 10000);
   }
 
+  // 根据 PARAM_DEFS 动态构建参数编辑面板。
   function buildPanel() {
     const container = document.getElementById("parameterRows");
 
@@ -159,11 +169,13 @@
     stripeFrameLabel = stripeValue;
   }
 
+  // 参数变化后的公共处理：联动曝光上限并触发防抖刷新。
   function afterParamChanged(key) {
     if (key === "video_frame_rate") updateExposureMaximum();
     scheduleRefresh();
   }
 
+  // 曝光时间上限随帧率联动。
   function updateExposureMaximum() {
     const entry = paramRows.get("exposure_time");
     const fps = Number(state.params.video_frame_rate) || 1;
@@ -189,6 +201,7 @@
     }
   }
 
+  // 防抖调度：正在请求时记录待刷新状态，否则延迟 200ms 后刷新。
   function scheduleRefresh() {
     if (state.fetching) {
       state.pending = true;
@@ -198,6 +211,7 @@
     state.refreshTimer = setTimeout(refresh, 200);
   }
 
+  // 调用仿真 API 并更新曲线和条纹图。
   async function refresh() {
     clearTimeout(state.refreshTimer);
     if (state.fetching) {
@@ -246,11 +260,13 @@
     }
   }
 
+  // 更新底部状态栏。
   function setStatus(status, metrics) {
     statusText.textContent = status;
     metricsText.textContent = metrics;
   }
 
+  // 根据仿真结果同步条纹帧滑块范围与标签。
   function syncStripeFrameControl(result) {
     const maxFrame = Math.max(0, result.num_frames - 1);
     stripeFrameSlider.disabled = maxFrame <= 0;
@@ -264,6 +280,7 @@
       `${(result.stripe_frame_index / fps).toFixed(3)}s`;
   }
 
+  // 重置全部参数并重新仿真。
   resetButton.addEventListener("click", () => {
     for (const entry of paramRows.values()) {
       const { def, range, number } = entry;
@@ -280,6 +297,7 @@
     refresh();
   });
 
+  // 按设备像素比初始化 Canvas，保证高分屏清晰。
   function prepareCanvas(canvas) {
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
@@ -293,6 +311,7 @@
     return ctx;
   }
 
+  // 根据数值大小选择适合的坐标刻度格式。
   function formatTick(value) {
     const abs = Math.abs(value);
     if (abs >= 1000) return value.toFixed(0);
@@ -301,6 +320,7 @@
     return value.toFixed(4);
   }
 
+  // 绘制单条曲线。
   function drawSeries(canvas, data, options) {
     const ctx = prepareCanvas(canvas);
     if (!ctx) return;
@@ -402,6 +422,7 @@
     ctx.fillText(formatTick(xMax), area.x + area.w, area.y + area.h + 18);
   }
 
+  // 绘制单帧卷帘快门条纹图。
   function drawStripe(canvas, result) {
     const ctx = prepareCanvas(canvas);
     if (!ctx) return;
@@ -465,6 +486,7 @@
     ctx.strokeRect(area.x, area.y, area.w, area.h);
   }
 
+  // 统一绘制全部曲线和条纹图。
   function drawAll(result) {
     window.requestAnimationFrame(() => {
       for (const def of PLOT_DEFS) {
@@ -488,6 +510,7 @@
     });
   }
 
+  // 绑定条纹帧滑块的输入和滚轮事件。
   function wireStripeFrameControl() {
     stripeFrameSlider.addEventListener("input", () => {
       const frameIndex = Number(stripeFrameSlider.value);
@@ -517,6 +540,7 @@
     );
   }
 
+  // 初始化页面并触发首次仿真。
   buildPanel();
   wireStripeFrameControl();
   updateExposureMaximum();
