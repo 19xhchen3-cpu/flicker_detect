@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+"""视频前置转换 Web 服务。
+
+前端上传视频后，本服务调用 flicker_detect.preprocess 逐帧转换，
+以 NDJSON 流式返回进度和每帧块亮度数据。
+"""
+
+import json
+import base64
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+import cv2
+
+from flicker_detect.detector_config import PARAMETER_TABLE
+from flicker_detect.preprocess import inspect_video, iter_video_frames
+
+APP_DIR = Path(__file__).resolve().parent
+
+# 默认使用 30fps、50Hz 参数表里的 cols/rows，当前填写值为 12x16。
+DEFAULT_PARAMS = PARAMETER_TABLE[(30, 50)]
+
+MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+}
+
+
+class ConvertRequestHandler(BaseHTTPRequestHandler):
+    server_version = "FlickerPreprocess/1.0"
+    # 使用 HTTP/1.1，浏览器才能正确解码 chunked 流式响应。
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        """提供前端静态页面。"""
+        parsed = urlparse(self.path)
+        relative = parsed.path.lstrip("/") or "index.html"
+        self._send_static(relative)
+
+    def do_POST(self) -> None:
+        """接收视频文件并流式执行前置转换。"""
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/convert":
+            self._send_json(404, {"type": "error", "error": "Not found"})
+            return
+
+        try:
+            query = parse_qs(parsed.query)
+            filename = query.get("name", ["video.mp4"])[0]
+            cols = int(query.get("cols", [str(DEFAULT_PARAMS.cols)])[0])
+            rows = int(query.get("rows", [str(DEFAULT_PARAMS.rows)])[0])
+            gamma = float(query.get("gamma", ["1.0"])[0])
+            length = int(self.headers.get("Content-Length", "0"))
+
+            if length <= 0:
+                raise ValueError("Empty video upload.")
+
+            # 可修改：上传文件保存到临时目录，转换完成后立即删除。
+            temp = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=Path(filename).suffix or ".mp4",
+            )
+            try:
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        raise ValueError("Video upload interrupted.")
+                    temp.write(chunk)
+                    remaining -= len(chunk)
+                temp.close()
+
+                self._stream_convert(temp.name, cols, rows, gamma)
+            finally:
+                temp.close()
+                Path(temp.name).unlink(missing_ok=True)
+        except Exception as exc:
+            self._send_json(500, {"type": "error", "error": str(exc)})
+
+    def _stream_convert(self, video_path: str, cols: int, rows: int, gamma: float) -> None:
+        """逐帧转换并以 chunked NDJSON 返回。"""
+        metadata = inspect_video(video_path, cols, rows, gamma)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        self._write_line(
+            {
+                "type": "meta",
+                "fps": metadata.fps,
+                "frame_count": metadata.frame_count,
+                "width": metadata.width,
+                "height": metadata.height,
+                "cols": metadata.cols,
+                "rows": metadata.rows,
+                "gamma": metadata.gamma,
+                "y_max": metadata.y_max,
+            }
+        )
+
+        processed_count = 0
+        try:
+            for frame in iter_video_frames(
+                video_path,
+                metadata,
+                include_source_gray=True,
+            ):
+                total = metadata.frame_count
+                percent = (frame.frame_id / total * 100.0) if total else 0.0
+                original_b64 = self._encode_gray_thumbnail(frame.source_gray)
+                self._write_line(
+                    {
+                        "type": "progress",
+                        "frame_id": frame.frame_id,
+                        "timestamp": frame.timestamp,
+                        "percent": percent,
+                        "min": frame.min_brightness,
+                        "max": frame.max_brightness,
+                        "mean": frame.mean_brightness,
+                        "blocks": frame.blocks.tolist(),
+                        "original": original_b64,
+                    }
+                )
+                processed_count += 1
+        except BrokenPipeError:
+            return
+        except Exception as exc:
+            self._write_line({"type": "error", "error": str(exc)})
+            self._write_chunk(b"")
+            return
+
+        self._write_line({"type": "done", "processed": processed_count})
+        self._write_chunk(b"")
+
+    def _encode_gray_thumbnail(self, gray) -> str | None:
+        """把原灰度帧压缩成 JPEG base64，供前端叠加显示。"""
+        if gray is None:
+            return None
+        height, width = gray.shape
+        thumb_width = 640
+        thumb_height = max(1, round(thumb_width * height / width))
+        thumb = cv2.resize(
+            gray,
+            (thumb_width, thumb_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            thumb,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 70],
+        )
+        if not ok:
+            return None
+        return base64.b64encode(encoded).decode("ascii")
+
+    def _write_line(self, payload: dict[str, object]) -> None:
+        """把一行 JSON 写入 chunked 流。"""
+        self._write_chunk(
+            (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        )
+
+    def _write_chunk(self, data: bytes) -> None:
+        """按 HTTP chunked 编码写数据并刷新。"""
+        self.wfile.write(f"{len(data):X}\r\n".encode("ascii"))
+        self.wfile.write(data)
+        self.wfile.write(b"\r\n")
+        self.wfile.flush()
+
+    def _send_static(self, relative: str) -> None:
+        root = APP_DIR.resolve()
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            self._send_json(404, {"type": "error", "error": "Not found"})
+            return
+
+        if not path.is_file():
+            self._send_json(404, {"type": "error", "error": "Not found"})
+            return
+
+        data = path.read_bytes()
+        content_type = MIME_TYPES.get(path.suffix, "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_json(self, status: int, payload: dict[str, object]) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def create_server(host: str = "127.0.0.1", port: int = 8766) -> ThreadingHTTPServer:
+    """创建前置转换页面服务。"""
+    server = ThreadingHTTPServer((host, port), ConvertRequestHandler)
+    server.daemon_threads = True
+    return server
+
+
+def main() -> None:
+    server = create_server()
+    url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+    print(f"Video preprocess app running at {url}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping video preprocess app.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

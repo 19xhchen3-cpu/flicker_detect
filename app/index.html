@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- 视频前置转换页面：加载视频、设置转换参数、逐帧查看分块结果。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>视频前置转换</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1>视频前置转换</h1>
+      <p>灰度化、gamma 提亮、按 cols × rows 分块平均</p>
+    </header>
+
+    <section class="controls">
+      <input id="videoInput" type="file" accept="video/*" hidden>
+      <video id="sourceVideo" muted playsinline preload="auto"></video>
+      <button id="loadButton" type="button">加载视频</button>
+      <span id="fileName" class="file-name">未选择视频</span>
+      <button id="startButton" type="button" disabled>开始解析</button>
+
+      <div class="param-controls">
+        <label>
+          gamma 提亮力度
+          <input id="gammaInput" type="number" min="0.1" max="5" step="0.1" value="1">
+        </label>
+        <label>
+          cols
+          <input id="colsInput" type="number" min="1" max="200" step="1" value="12">
+        </label>
+        <label>
+          rows
+          <input id="rowsInput" type="number" min="1" max="200" step="1" value="16">
+        </label>
+      </div>
+
+      <div class="view-controls">
+        <label>
+          查看帧
+          <input id="frameScrubber" type="range" min="0" max="0" value="0" step="1" disabled>
+        </label>
+        <span id="scrubberLabel" class="scrubber-label">Frame 0/0</span>
+        <label>
+          块叠加透明度
+          <input id="opacityInput" type="range" min="0" max="100" value="50" step="1">
+        </label>
+        <span id="opacityLabel" class="scrubber-label">50%</span>
+      </div>
+
+      <div id="progressWrap" class="progress-wrap">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+      <div id="frameStatus" class="frame-status">等待加载视频</div>
+    </section>
+
+    <section class="preview">
+      <canvas id="previewCanvas" width="320" height="240"></canvas>
+      <div id="stats" class="stats"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
