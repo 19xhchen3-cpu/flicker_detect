@@ -9,6 +9,9 @@ from typing import Final
 # 14 bit 输入亮度的满量程值。
 Y_MAX: Final[int] = (1 << 14) - 1
 
+# 可修改：符号矩阵判定“不变”的绝对差分阈值。
+SIGN_ZERO_EPSILON: Final[float] = 1e-4
+
 # 支持检测的 fps 挡位，按从小到大排列。
 FPS_TIERS: Final[tuple[int, ...]] = (
     24,
