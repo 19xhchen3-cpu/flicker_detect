@@ -16,7 +16,10 @@ from urllib.parse import parse_qs, urlparse
 
 import cv2
 
-from flicker_detect.detector_config import PARAMETER_TABLE
+from flicker_detect.detector_config import (
+    PARAMETER_TABLE,
+    lookup_detector_parameters,
+)
 from flicker_detect.preprocess import inspect_video, iter_video_frames
 
 APP_DIR = Path(__file__).resolve().parent
@@ -107,6 +110,7 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
                 "rows": metadata.rows,
                 "gamma": metadata.gamma,
                 "y_max": metadata.y_max,
+                "detector_params": self._detector_params(metadata.fps),
             }
         )
 
@@ -164,6 +168,28 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
         if not ok:
             return None
         return base64.b64encode(encoded).decode("ascii")
+
+    def _detector_params(self, fps: float) -> dict[str, object]:
+        """返回当前帧率下 50Hz 检测参数，供前端初始化参数编辑器。"""
+        try:
+            params = lookup_detector_parameters(round(fps), 50)
+        except KeyError:
+            params = PARAMETER_TABLE[(30, 50)]
+        return {
+            "fps": params.fps,
+            "detection_frequency": params.detection_frequency,
+            "group_size": params.group_size,
+            "min_frames": params.min_frames,
+            "min_match_groups": params.min_match_groups,
+            "min_group_amp_ratio": params.min_group_amp_ratio,
+            "min_amp_pos_ratio": params.min_amp_pos_ratio,
+            "same_pattern_ratio": params.same_pattern_ratio,
+            "slope_max": params.slope_max,
+            "max_group_amp_cv": params.max_group_amp_cv,
+            "y_max": params.y_max,
+            "cols": params.cols,
+            "rows": params.rows,
+        }
 
     def _write_line(self, payload: dict[str, object]) -> None:
         """把一行 JSON 写入 chunked 流。"""

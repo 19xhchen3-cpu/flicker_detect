@@ -1,63 +1,140 @@
 <!doctype html>
-<!-- 视频前置转换页面：加载视频、设置转换参数、逐帧查看分块结果。 -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>视频前置转换</title>
+  <title>频闪检测工作台</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <video id="sourceVideo" muted playsinline preload="auto"></video>
+
   <main class="app">
     <header class="app-header">
-      <h1>视频前置转换</h1>
-      <p>灰度化、gamma 提亮、按 cols × rows 分块平均</p>
+      <h1>频闪检测工作台</h1>
+      <p>视频预处理与周期频闪检测</p>
     </header>
 
-    <section class="controls">
-      <input id="videoInput" type="file" accept="video/*" hidden>
-      <video id="sourceVideo" muted playsinline preload="auto"></video>
-      <button id="loadButton" type="button">加载视频</button>
-      <span id="fileName" class="file-name">未选择视频</span>
-      <button id="startButton" type="button" disabled>开始解析</button>
+    <section class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>视频</h2>
+          <input id="videoInput" type="file" accept="video/*" hidden>
+          <div class="row">
+            <button id="loadButton" type="button">加载视频</button>
+            <span id="fileName" class="file-name">未选择视频</span>
+          </div>
+          <button id="startButton" type="button" disabled>开始解析</button>
+          <div id="progressWrap" class="progress-wrap">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+          <div id="frameStatus" class="frame-status">等待加载视频</div>
+        </section>
 
-      <div class="param-controls">
-        <label>
-          gamma 提亮力度
-          <input id="gammaInput" type="number" min="0.1" max="5" step="0.1" value="1">
-        </label>
-        <label>
-          cols
-          <input id="colsInput" type="number" min="1" max="200" step="1" value="12">
-        </label>
-        <label>
-          rows
-          <input id="rowsInput" type="number" min="1" max="200" step="1" value="16">
-        </label>
-      </div>
+        <section class="panel">
+          <h2>预处理参数</h2>
+          <div class="param-grid">
+            <label>
+              gamma
+              <input id="gammaInput" type="number" min="0.1" max="5" step="0.1" value="1">
+            </label>
+            <label>
+              cols
+              <input id="colsInput" type="number" min="1" max="200" step="1" value="12">
+            </label>
+            <label>
+              rows
+              <input id="rowsInput" type="number" min="1" max="200" step="1" value="16">
+            </label>
+          </div>
+        </section>
 
-      <div class="view-controls">
-        <label>
-          查看帧
-          <input id="frameScrubber" type="range" min="0" max="0" value="0" step="1" disabled>
-        </label>
-        <span id="scrubberLabel" class="scrubber-label">Frame 0/0</span>
-        <label>
-          块叠加透明度
-          <input id="opacityInput" type="range" min="0" max="100" value="50" step="1">
-        </label>
-        <span id="opacityLabel" class="scrubber-label">50%</span>
-      </div>
+        <section class="panel">
+          <h2>检测参数</h2>
+          <div class="param-grid">
+            <label>
+              fps
+              <input id="fpsInput" type="number" readonly value="30">
+            </label>
+            <label>
+              检测频率
+              <input id="detectionFrequencyInput" data-param="detection_frequency" type="number" min="1" step="1" value="50">
+            </label>
+            <label>
+              group_size
+              <input id="groupSizeInput" data-param="group_size" type="number" min="2" step="1" value="4">
+            </label>
+            <label>
+              min_frames
+              <input id="minFramesInput" data-param="min_frames" type="number" min="1" step="1" value="30">
+            </label>
+            <label>
+              min_match_groups
+              <input id="minMatchGroupsInput" data-param="min_match_groups" type="number" min="0" step="1" value="2">
+            </label>
+            <label>
+              min_group_amp_ratio
+              <input id="minGroupAmpRatioInput" data-param="min_group_amp_ratio" type="number" min="0" step="0.0001" value="0.001">
+            </label>
+            <label>
+              min_amp_pos_ratio
+              <input id="minAmpPosRatioInput" data-param="min_amp_pos_ratio" type="number" min="0" step="0.01" value="0.5">
+            </label>
+            <label>
+              same_pattern_ratio
+              <input id="samePatternRatioInput" data-param="same_pattern_ratio" type="number" min="0" max="1" step="0.01" value="0.8">
+            </label>
+            <label>
+              slope_max
+              <input id="slopeMaxInput" data-param="slope_max" type="number" min="0" step="0.1" value="10">
+            </label>
+            <label>
+              max_group_amp_cv
+              <input id="maxGroupAmpCvInput" data-param="max_group_amp_cv" type="number" min="0" step="0.01" value="0.4">
+            </label>
+            <label>
+              y_max
+              <input id="yMaxInput" data-param="y_max" type="number" min="1" step="1" value="16383">
+            </label>
+          </div>
+        </section>
+      </aside>
 
-      <div id="progressWrap" class="progress-wrap">
-        <div id="progressFill" class="progress-fill"></div>
-      </div>
-      <div id="frameStatus" class="frame-status">等待加载视频</div>
-    </section>
+      <section class="content">
+        <section class="panel preview-panel">
+          <div class="view-controls">
+            <label>
+              帧
+              <input id="frameScrubber" type="range" min="0" max="0" value="0" step="1" disabled>
+            </label>
+            <span id="scrubberLabel" class="scrubber-label">Frame 0/0</span>
+            <label>
+              亮度块不透明度
+              <input id="blockOpacityInput" type="range" min="0" max="100" value="50" step="1">
+            </label>
+            <span id="blockOpacityLabel" class="scrubber-label">50%</span>
+            <label>
+              检测块不透明度
+              <input id="detectOpacityInput" type="range" min="0" max="100" value="80" step="1">
+            </label>
+            <span id="detectOpacityLabel" class="scrubber-label">80%</span>
+            <label class="check-label">
+              <input id="showDetectedInput" type="checkbox" checked>
+              检测块
+            </label>
+          </div>
+          <canvas id="previewCanvas" width="320" height="240"></canvas>
+          <div id="stats" class="stats"></div>
+        </section>
 
-    <section class="preview">
-      <canvas id="previewCanvas" width="320" height="240"></canvas>
-      <div id="stats" class="stats"></div>
+        <section class="panel chart-panel">
+          <div class="chart-header">
+            <h2>检测块数</h2>
+            <span id="chartSummary" class="chart-summary">等待数据</span>
+          </div>
+          <canvas id="chartCanvas" width="900" height="180"></canvas>
+        </section>
+      </section>
     </section>
   </main>
 
