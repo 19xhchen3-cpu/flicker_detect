@@ -121,9 +121,11 @@
 
 - `min_group_amp = y_max × min_group_amp_ratio`
 - `K = ceil(position_count × min_amp_pos_ratio)`
-- 一个周期组中至少需要 `K` 个位置的振幅超过 `min_group_amp`，该组才被判定为有效变化。
+- 一个周期组中至少需要 `K` 个位置的振幅超过 `min_group_amp`，即 `count >= K`，该组才被判定为有效变化。
 - `K-of-N` 允许周期波形中存在少量平台位置，避免单个近零差分否决整个真实频闪周期。
 - 已确认：`y_max` 为输入亮度满量程值，`min_group_amp` 为绝对亮度差门槛；振幅通过条件为 `amp > min_group_amp`。
+- 已确认：K-of-N 的计数量通过条件为 `count >= K`；它不同于振幅本身的严格 `>` 比较。
+- 已确认：`min_amp_pos_ratio = 0` 时禁用 K-of-N 门，所有组直接通过。
 - 待确认：`min_group_amp_ratio` 与 `min_amp_pos_ratio` 的默认值。
 
 ### 周期闭合斜率门
@@ -133,6 +135,7 @@
 - 若 `slope` 超过允许范围，则该组更接近持续变亮或持续变暗，或受曝光趋势影响，算法将其剔除。
 - 允许范围由 `slope_max` 控制；剔除条件为 `abs(slope) > slope_max`。
 - 已确认：`first` 使用丢弃最旧帧后的逻辑索引；`slope_max` 单位为亮度/帧。
+- 已确认：`slope_max = 0` 时禁用闭合斜率门，所有组直接通过。
 
 ### 主导符号模式匹配
 
@@ -154,7 +157,7 @@
 
 - 对主导模式中的周期组，按相位位置分别收集振幅：
   - `mean_amp[p] = mean(amp[g, p])`
-  - `CV[p] = std(amp[g, p]) / mean_amp[p]`
+  - `CV[p] = sqrt(var(amp[g, p])) / mean_amp[p]`，即总体标准差除以均值
   - `max_pos_cv = max(CV[p])`
 - 平均振幅未达到最低门槛的位置不参加方差聚合，避免平台位置和量化噪声主导结果。
 - 算法取所有有效相位位置中的最大方差作为最严格的稳定性指标。
@@ -162,6 +165,7 @@
 - 参与统计的最低平均振幅门槛为 `min_group_amp`，通过阈值为 `max_group_amp_cv`；当前使用总体标准差。
 - 已确认：位置过滤条件为 `mean_amp[p] > min_group_amp`；当前固定使用总体标准差。
 - 已确认：`max_pos_cv > max_group_amp_cv` 时拒绝该块。
+- 已确认：`max_group_amp_cv = 0` 时禁用 CV 门；无有效位置时诊断量输出 `NaN`，避免把“不可判定”误读为零方差。
 
 ### 块最终判定
 
@@ -200,6 +204,9 @@
 - 不可判定与无频闪输出相同：`block_flags` 只有 0/1，`flicker_block_num` 不累加。
 - 输出状态不包含目标驱动频率或视在频率。
 - 振幅门使用 `amp > min_group_amp`；闭合门剔除 `abs(slope) > slope_max`；CV 门拒绝 `max_pos_cv > max_group_amp_cv`；主导模式要求 `flip_count > min_match_groups`。
+- K-of-N 的计数量通过条件为 `count >= K`，与严格 `>` 比较的阈值不同。
+- `min_amp_pos_ratio = 0` 禁用 K-of-N，`slope_max = 0` 禁用闭合斜率门；主导模式参数为 0 时也视为禁用对应约束。
+- `max_group_amp_cv = 0` 禁用 CV 门；CV 无有效位置时按不可判定处理，诊断量输出 `NaN`。
 - `write_index` 为环形数组指针；新帧头部进入、旧帧尾部退出；压入后计算指向下一位置，压入前计算指向当前位置。
 - 配置表只包含需要检测的 fps 模式和对应频闪频率，不在表中的组合不检测。
 - `sign == 0` 的 `1e-4f` 为绝对亮度容差。
@@ -226,7 +233,7 @@
   - 已增加 `tests/test_detector_config.py`
 - 补齐参数类型、默认值和参数校验规则。
 - 确认目标频率列表和真实参数默认值后，定义输入状态、中间矩阵和输出状态的数据契约。
-- 实现分组、特征构建、K-of-N、闭合斜率、主导符号模式、CV 和块最终判定。
+- 已实现分组、特征构建、K-of-N、闭合斜率、主导符号模式、跨周期振幅 CV 门、块最终判定和输出状态。
 - 用仿真引擎生成已知频闪数据，对检测模块做自动化验证。
 - 再实现置信度模型和运动场景方案。
 
@@ -263,6 +270,8 @@
 - 最后使用 `main()` 调用预处理和检测功能模块。
 - 当前已完成分组功能 `group_frames()`。
 - 当前已完成特征构建功能 `build_features()`，输出 `diff/amp/sign` 矩阵。
+- 当前已完成组有效性功能 `evaluate_group_validity()`，组合 K-of-N、闭合斜率、主导符号模式与跨周期振幅 CV 门。
+- 当前已完成块最终判定功能 `finalize_block_detection()`，输出 `block_flags`、`flicker_block_num` 和完整诊断量。
 - 所有测试脚本统一放在 `tests/` 目录中，不混入主模块、预处理模块或前端目录。
 - 视频处理流程：视频 -> 预处理单帧 -> `main()` 写入缓存 -> `valid_count` 与 `min_frames` 比较 -> 满足最低缓存后开始分组检测。
 - 历史缓存最多保留 `min_frames` 帧，不能继续增长；超出后从最旧端丢弃。

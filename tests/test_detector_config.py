@@ -48,7 +48,7 @@ class DetectorConfigTest(unittest.TestCase):
         self.assertEqual(params.min_frames, 30)
         self.assertEqual(params.history, 30)
         self.assertEqual(params.diff_window_size, 30)
-        self.assertEqual(params.min_match_groups, 0)
+        self.assertEqual(params.min_match_groups, 2)
         self.assertEqual(params.min_group_amp_ratio, 0.001)
         self.assertEqual(params.min_amp_pos_ratio, 0.5)
         self.assertEqual(params.same_pattern_ratio, 0.8)
