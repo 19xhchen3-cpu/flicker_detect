@@ -2,6 +2,18 @@
   "use strict";
 
   const SIGN_ZERO_EPSILON = 1e-4;
+  const HISTORY_COLORS = [
+    "#2563eb",
+    "#16a34a",
+    "#d97706",
+    "#dc2626",
+    "#7c3aed",
+    "#0891b2",
+    "#db2777",
+    "#65a30d",
+    "#475569",
+    "#b45309",
+  ];
 
   const fileInput = document.getElementById("videoInput");
   const loadButton = document.getElementById("loadButton");
@@ -26,6 +38,12 @@
   const previewCanvas = document.getElementById("previewCanvas");
   const chartCanvas = document.getElementById("chartCanvas");
   const chartSummary = document.getElementById("chartSummary");
+  const blockTooltip = document.getElementById("blockTooltip");
+  const blockSelectGrid = document.getElementById("blockSelectGrid");
+  const clearHistoryBlocks = document.getElementById("clearHistoryBlocks");
+  const historyLegend = document.getElementById("historyLegend");
+  const historyCanvas = document.getElementById("historyCanvas");
+  const historySummary = document.getElementById("historySummary");
 
   let selectedFile = null;
   let metadata = null;
@@ -37,6 +55,8 @@
   let currentFrameId = null;
   let detectionVersion = 0;
   let preprocessDirty = false;
+  let selectedHistoryBlocks = new Set();
+  let detectorOptions = [];
 
   loadButton.addEventListener("click", () => {
     fileInput.click();
@@ -71,6 +91,7 @@
     resetProgress();
     resetScrubber();
     drawChart();
+    resetHistoryPanel();
   });
 
   startButton.addEventListener("click", startConversion);
@@ -95,22 +116,31 @@
     if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
   });
 
+  previewCanvas.addEventListener("mousemove", handlePreviewMouseMove);
+  previewCanvas.addEventListener("mouseleave", hideBlockTooltip);
+
+  blockSelectGrid.addEventListener("click", handleHistoryBlockSelect);
+
+  clearHistoryBlocks.addEventListener("click", () => {
+    clearHistorySelection();
+    drawHistoryCurve();
+  });
+
   sourceVideo.addEventListener("loadedmetadata", () => {
     if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
   });
 
   document.querySelectorAll("[data-param]").forEach((input) => {
     input.addEventListener("input", scheduleDetection);
+    input.addEventListener("change", scheduleDetection);
   });
 
-  detectionFrequencyInput.addEventListener("input", () => {
+  detectionFrequencyInput.addEventListener("change", () => {
     if (!metadata) return;
-    const fpsMode = metadata.fps_mode || 30;
-    const groupSize = groupSizeFor(fpsMode, Number(detectionFrequencyInput.value));
-    if (groupSize) {
-      document.getElementById("groupSizeInput").value = String(groupSize);
-    }
-    scheduleDetection();
+    const selected = detectorOptions.find(
+      (item) => String(item.detection_frequency) === detectionFrequencyInput.value,
+    );
+    if (selected) applyDetectorParams(selected.params);
   });
 
   [gammaInput, colsInput, rowsInput].forEach((input) => {
@@ -136,6 +166,7 @@
     resetScrubber();
     setStatus("解析中...", "");
     drawChart();
+    resetHistoryPanel();
 
     const query = new URLSearchParams({
       name: selectedFile.name,
@@ -187,7 +218,11 @@
     if (payload.type === "meta") {
       metadata = payload;
       metadata.fps_mode = Math.round(Number(payload.fps));
-      applyDetectorParams(payload.detector_params || {});
+      buildHistoryBlockGrid(payload.cols, payload.rows);
+      applyDetectorOptions(
+        payload.detector_options || [],
+        payload.detector_params || {},
+      );
       setStatus(
         `元数据：${payload.width}×${payload.height}，fps=${Number(payload.fps).toFixed(3)}，` +
         `分块=${payload.cols}×${payload.rows}`,
@@ -246,6 +281,39 @@
     }
   }
 
+  function applyDetectorOptions(options, fallbackParams) {
+    detectorOptions = Array.isArray(options) ? options : [];
+    detectionFrequencyInput.innerHTML = "";
+
+    if (detectorOptions.length === 0) {
+      const fallbackFrequency =
+        Number(fallbackParams.detection_frequency) || 50;
+      const option = document.createElement("option");
+      option.value = String(fallbackFrequency);
+      option.textContent = `${fallbackFrequency} Hz`;
+      detectionFrequencyInput.appendChild(option);
+      detectionFrequencyInput.value = String(fallbackFrequency);
+      applyDetectorParams(fallbackParams);
+      return;
+    }
+
+    const preferred =
+      Number(fallbackParams.detection_frequency) ||
+      Number(detectorOptions[0].detection_frequency);
+    let selected = null;
+    for (const item of detectorOptions) {
+      const option = document.createElement("option");
+      option.value = String(item.detection_frequency);
+      option.textContent = `${item.detection_frequency} Hz`;
+      detectionFrequencyInput.appendChild(option);
+      if (Number(item.detection_frequency) === preferred) selected = item;
+    }
+
+    if (!selected) selected = detectorOptions[0];
+    detectionFrequencyInput.value = String(selected.detection_frequency);
+    applyDetectorParams(selected.params);
+  }
+
   function readParams() {
     const params = {};
     document.querySelectorAll("[data-param]").forEach((input) => {
@@ -271,6 +339,7 @@
     const params = readParams();
     const blockCount = metadata.cols * metadata.rows;
     const history = [];
+    const historyFrameIds = [];
     const results = [];
 
     for (let i = 0; i < frameData.length; i += 1) {
@@ -280,9 +349,16 @@
         continue;
       }
       history.push(Float64Array.from(frame.blocks));
+      historyFrameIds.push(frame.frame_id);
       if (history.length > params.min_frames) history.shift();
+      if (historyFrameIds.length > params.min_frames) historyFrameIds.shift();
       if (history.length >= params.min_frames) {
-        results[i] = detectWindow(history, params, blockCount);
+        results[i] = detectWindow(
+          history,
+          params,
+          blockCount,
+          historyFrameIds,
+        );
       } else {
         results[i] = emptyResult(blockCount);
       }
@@ -293,23 +369,56 @@
     updateDetectionStats(currentDetect);
     drawChart();
     if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
+    drawHistoryCurve();
     setStatus(
       `检测完成，共 ${frameData.length} 帧`,
       stats.textContent,
     );
   }
 
-  function detectWindow(history, params, blockCount) {
+  function detectWindow(history, params, blockCount, frameIds) {
     const result = emptyResult(blockCount);
     const groupSize = Math.max(2, Math.round(params.group_size));
     const groupStride = groupSize - 1;
     const positionCount = groupStride;
     const validCount = history.length;
     const groupCount = validCount > 0 ? Math.floor((validCount - 1) / groupStride) : 0;
+    result.group_count = groupCount;
+    result.position_count = positionCount;
     if (groupCount <= 0) return result;
 
     const usedFrames = groupSize + (groupCount - 1) * groupStride;
     const dropCount = validCount - usedFrames;
+    result.groups = [];
+    for (let g = 0; g < groupCount; g += 1) {
+      const startIndex = dropCount + g * groupStride;
+      const endIndex = startIndex + groupSize - 1;
+      result.groups.push({
+        group_index: g,
+        start_frame: frameIds ? Number(frameIds[startIndex]) : startIndex,
+        end_frame: frameIds ? Number(frameIds[endIndex]) : endIndex,
+      });
+    }
+    result.group_amp_pass = Array.from(
+      { length: blockCount },
+      () => new Uint8Array(groupCount),
+    );
+    result.group_slope = Array.from(
+      { length: blockCount },
+      () => new Float64Array(groupCount).fill(NaN),
+    );
+    result.group_valid = Array.from(
+      { length: blockCount },
+      () => new Uint8Array(groupCount),
+    );
+    result.group_dominant = Array.from(
+      { length: blockCount },
+      () => new Uint8Array(groupCount),
+    );
+    result.group_sign = Array.from(
+      { length: blockCount },
+      () => Array.from({ length: groupCount }, () => ""),
+    );
     const diffMatrix = [];
     const ampMatrix = [];
     const signMatrix = [];
@@ -338,9 +447,26 @@
       signMatrix.push(signGroup);
     }
 
+    for (let g = 0; g < groupCount; g += 1) {
+      for (let b = 0; b < blockCount; b += 1) {
+        let pattern = "";
+        for (let p = 0; p < positionCount; p += 1) {
+          const value = signMatrix[g][p][b];
+          pattern += value > 0 ? "+" : value < 0 ? "-" : "0";
+        }
+        result.group_sign[b][g] = pattern;
+      }
+    }
+
     const minGroupAmp = params.y_max * params.min_group_amp_ratio;
     const ampGateEnabled = params.min_amp_pos_ratio > 0;
     const kValue = ampGateEnabled ? Math.ceil(positionCount * params.min_amp_pos_ratio) : 0;
+    result.min_group_amp = minGroupAmp;
+    result.k_value = kValue;
+    result.slope_max = Number(params.slope_max) || 0;
+    result.min_match_groups = Number(params.min_match_groups) || 0;
+    result.same_pattern_ratio = Number(params.same_pattern_ratio) || 0;
+    result.max_group_amp_cv = Number(params.max_group_amp_cv) || 0;
     const ampGroupOk = Array.from({ length: groupCount }, () => new Uint8Array(blockCount));
 
     if (ampGateEnabled) {
@@ -350,11 +476,18 @@
           for (let p = 0; p < positionCount; p += 1) {
             if (ampMatrix[g][p][b] > minGroupAmp) passCount += 1;
           }
+          result.group_amp_pass[b][g] = passCount;
+          result.amp_pass_count[b] = Math.max(
+            result.amp_pass_count[b],
+            passCount,
+          );
           ampGroupOk[g][b] = passCount >= kValue ? 1 : 0;
         }
       }
     } else {
       for (let g = 0; g < groupCount; g += 1) ampGroupOk[g].fill(1);
+      result.amp_pass_count.fill(positionCount);
+      result.group_amp_pass.forEach((passes) => passes.fill(positionCount));
     }
 
     const slopeGroupOk = Array.from({ length: groupCount }, () => new Uint8Array(blockCount));
@@ -364,7 +497,12 @@
           if (!ampGroupOk[g][b]) continue;
           const start = dropCount + g * groupStride;
           const slope = (history[start + groupStride][b] - history[start][b]) / groupStride;
-          slopeGroupOk[g][b] = Math.abs(slope) <= params.slope_max ? 1 : 0;
+          result.group_slope[b][g] = slope;
+          const absSlope = Math.abs(slope);
+          if (!Number.isFinite(result.max_abs_slope[b]) || absSlope > result.max_abs_slope[b]) {
+            result.max_abs_slope[b] = absSlope;
+          }
+          slopeGroupOk[g][b] = absSlope <= params.slope_max ? 1 : 0;
         }
       }
     } else {
@@ -376,17 +514,19 @@
       for (let g = 0; g < groupCount; g += 1) {
         if (slopeGroupOk[g][b]) validIndices.push(g);
       }
+      result.valid_group_count[b] = validIndices.length;
+      for (const g of validIndices) result.group_valid[b][g] = 1;
 
       let dominantOk = false;
       let dominantGroups = [];
       let signFlipRatioValue = 0;
+      let bestSize = 0;
 
       if (validIndices.length > 0) {
         const classId = new Int32Array(validIndices.length).fill(-1);
         const assigned = new Uint8Array(validIndices.length);
         let bestLocal = -1;
         let bestRep = -1;
-        let bestSize = 0;
 
         for (let i = 0; i < validIndices.length; i += 1) {
           if (assigned[i]) continue;
@@ -417,10 +557,27 @@
           for (let j = 0; j < validIndices.length; j += 1) {
             if (classId[j] === bestRep) dominantGroups.push(validIndices[j]);
           }
+          for (const g of dominantGroups) result.group_dominant[b][g] = 1;
         }
       }
 
       result.sign_flip_ratio[b] = signFlipRatioValue;
+      result.flip_count[b] = bestSize;
+
+      if (dominantGroups.length > 0) {
+        for (const g of dominantGroups) {
+          const start = dropCount + g * groupStride;
+          const slope =
+            (history[start + groupStride][b] - history[start][b]) / groupStride;
+          const absSlope = Math.abs(slope);
+          if (
+            !Number.isFinite(result.max_used_abs_slope[b]) ||
+            absSlope > result.max_used_abs_slope[b]
+          ) {
+            result.max_used_abs_slope[b] = absSlope;
+          }
+        }
+      }
 
       if (!dominantOk || dominantGroups.length === 0) continue;
 
@@ -506,6 +663,25 @@
       diff_cv: new Float64Array(blockCount).fill(NaN),
       avg_ratio_diff: new Float64Array(blockCount).fill(NaN),
       avg_delta_diff: new Float64Array(blockCount).fill(NaN),
+      amp_pass_count: new Uint8Array(blockCount),
+      valid_group_count: new Uint8Array(blockCount),
+      flip_count: new Uint32Array(blockCount),
+      max_abs_slope: new Float64Array(blockCount).fill(NaN),
+      max_used_abs_slope: new Float64Array(blockCount).fill(NaN),
+      groups: [],
+      group_amp_pass: [],
+      group_slope: [],
+      group_valid: [],
+      group_dominant: [],
+      group_sign: [],
+      group_count: 0,
+      position_count: 0,
+      min_group_amp: 0,
+      k_value: 0,
+      slope_max: 0,
+      min_match_groups: 0,
+      same_pattern_ratio: 0,
+      max_group_amp_cv: 0,
     };
   }
 
@@ -513,18 +689,6 @@
     let count = 0;
     for (const value of array) if (value) count += 1;
     return count;
-  }
-
-  function groupSizeFor(fps, driveFrequency) {
-    if (!fps || !driveFrequency) return null;
-    const intensity = 2 * driveFrequency;
-    const aliasCount = Math.round(intensity / fps);
-    const apparentFrequency = Math.abs(intensity - aliasCount * fps);
-    if (apparentFrequency === 0) return null;
-    const periodFrames = fps / apparentFrequency;
-    const rounded = Math.round(periodFrames);
-    if (Math.abs(periodFrames - rounded) > 1e-9) return null;
-    return rounded + 1;
   }
 
   function numberOr(value, fallback) {
@@ -536,7 +700,9 @@
     if (!metadata || !frameData[frameId]) return;
     currentFrameId = frameId;
     currentDetect = detectionResults[frameId] || null;
+    hideBlockTooltip();
     updateDetectionStats(currentDetect);
+    drawHistoryCurve();
 
     const frame = frameData[frameId];
     if (frame.original) {
@@ -780,6 +946,387 @@
     ctx.fill();
   }
 
+  function drawHistoryCurve() {
+    const ctx = historyCanvas.getContext("2d");
+    const width = historyCanvas.width;
+    const height = historyCanvas.height;
+    ctx.clearRect(0, 0, width, height);
+    historyLegend.textContent = "";
+
+    if (!metadata || frameData.length === 0) {
+      historySummary.textContent = "等待数据";
+      return;
+    }
+
+    const selected = [...selectedHistoryBlocks].sort((a, b) => a - b);
+    if (selected.length === 0) {
+      historySummary.textContent = "未选择块";
+      return;
+    }
+
+    const params = readParams();
+    const windowSize = Math.max(1, Math.round(params.min_frames) || 1);
+    const frameId = currentFrameId !== null ? currentFrameId : frameData.length - 1;
+    if (frameId < 0 || !frameData[frameId]) {
+      historySummary.textContent = "无可用帧";
+      return;
+    }
+
+    const start = Math.max(0, frameId - windowSize + 1);
+    const series = [];
+    const allValues = [];
+    let firstFrame = Infinity;
+    let lastFrame = -Infinity;
+    for (const blockIndex of selected) {
+      const points = [];
+      for (let i = start; i <= frameId; i += 1) {
+        const frame = frameData[i];
+        const value = frame && frame.blocks ? Number(frame.blocks[blockIndex]) : NaN;
+        if (!Number.isFinite(value)) continue;
+        points.push({ frameId: i, value });
+        allValues.push(value);
+      }
+      if (points.length < 2) continue;
+      series.push({
+        blockIndex,
+        points,
+        color: HISTORY_COLORS[series.length % HISTORY_COLORS.length],
+      });
+      firstFrame = Math.min(firstFrame, points[0].frameId);
+      lastFrame = Math.max(lastFrame, points[points.length - 1].frameId);
+    }
+
+    if (series.length === 0 || allValues.length === 0) {
+      historySummary.textContent = "选中块数据不足";
+      return;
+    }
+
+    buildHistoryLegend(series);
+
+    const rawMin = Math.min(...allValues);
+    const rawMax = Math.max(...allValues);
+    const mean = allValues.reduce((sum, value) => sum + value, 0) / allValues.length;
+    const range = rawMax - rawMin || 1;
+    const padding = range * 0.08;
+    const minValue = rawMin - padding;
+    const maxValue = rawMax + padding;
+
+    const padLeft = 58;
+    const padRight = 14;
+    const padTop = 22;
+    const padBottom = 26;
+    const plotWidth = width - padLeft - padRight;
+    const plotHeight = height - padTop - padBottom;
+    const frameSpan = Math.max(1, lastFrame - firstFrame);
+
+    const px = (frameIdValue) =>
+      padLeft + ((frameIdValue - firstFrame) / frameSpan) * plotWidth;
+    const py = (value) =>
+      padTop + (1 - (value - minValue) / (maxValue - minValue)) * plotHeight;
+
+    ctx.strokeStyle = "#e5e7eb";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+      const ratio = i / 4;
+      const value = minValue + ratio * (maxValue - minValue);
+      const y = Math.round(py(value)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(padLeft, y);
+      ctx.lineTo(width - padRight, y);
+      ctx.stroke();
+      ctx.fillStyle = "#667085";
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(formatHistoryNumber(value), padLeft - 6, y);
+    }
+
+    const detect = currentDetect;
+    const groups =
+      detect && Array.isArray(detect.groups) ? detect.groups : [];
+    if (groups.length > 0) {
+      for (const item of series) {
+        const dominantFlags = detect.group_dominant[item.blockIndex];
+        const validFlags = detect.group_valid[item.blockIndex];
+        if (!dominantFlags || !validFlags) continue;
+        for (let g = 0; g < groups.length; g += 1) {
+          const startX = px(groups[g].start_frame);
+          const endX = px(groups[g].end_frame);
+          if (dominantFlags[g]) {
+            ctx.fillStyle = hexToRgba(item.color, 0.16);
+          } else if (validFlags[g]) {
+            ctx.fillStyle = "rgba(148, 163, 184, 0.10)";
+          } else {
+            continue;
+          }
+          ctx.fillRect(startX, padTop, Math.max(1, endX - startX), plotHeight);
+        }
+      }
+
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(100, 116, 139, 0.35)";
+      const boundaries = [];
+      for (const group of groups) boundaries.push(group.start_frame);
+      boundaries.push(groups[groups.length - 1].end_frame);
+      for (const boundary of boundaries) {
+        const x = Math.round(px(boundary)) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x, padTop);
+        ctx.lineTo(x, height - padBottom);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "#475569";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (const group of groups) {
+        const startX = px(group.start_frame);
+        const endX = px(group.end_frame);
+        const label = `G${group.group_index} ${group.start_frame}-${group.end_frame}`;
+        ctx.fillText(label, startX + (endX - startX) / 2, 4);
+      }
+    }
+
+    ctx.strokeStyle = "#dbeafe";
+    for (const frameIdValue of [firstFrame, lastFrame]) {
+      const x = Math.round(px(frameIdValue)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, padTop);
+      ctx.lineTo(x, height - padBottom);
+      ctx.stroke();
+      ctx.fillStyle = "#667085";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(String(frameIdValue), x, height - padBottom + 7);
+    }
+
+    for (const item of series) {
+      ctx.strokeStyle = item.color;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      item.points.forEach((point, index) => {
+        const x = px(point.frameId);
+        const y = py(point.value);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      const lastPoint = item.points[item.points.length - 1];
+      ctx.fillStyle = item.color;
+      ctx.beginPath();
+      ctx.arc(px(lastPoint.frameId), py(lastPoint.value), 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    historySummary.textContent =
+      `已选 ${series.length} 块 · 组 ${groups.length} · ` +
+      `帧 ${firstFrame}-${lastFrame} · ` +
+      `min=${formatHistoryNumber(rawMin)} ` +
+      `max=${formatHistoryNumber(rawMax)} ` +
+      `mean=${formatHistoryNumber(mean)}`;
+  }
+
+  function buildHistoryLegend(series) {
+    historyLegend.textContent = "";
+    for (const item of series) {
+      const label = document.createElement("span");
+      label.className = "history-legend-item";
+      const swatch = document.createElement("i");
+      swatch.className = "history-legend-swatch";
+      swatch.style.backgroundColor = item.color;
+      label.append(swatch, document.createTextNode(`块 ${item.blockIndex}`));
+      historyLegend.appendChild(label);
+    }
+  }
+
+  function handleHistoryBlockSelect(event) {
+    const cell = event.target.closest("[data-block]");
+    if (!cell) return;
+    const block = Number(cell.dataset.block);
+    if (selectedHistoryBlocks.has(block)) {
+      selectedHistoryBlocks.delete(block);
+      cell.classList.remove("selected");
+    } else {
+      selectedHistoryBlocks.add(block);
+      cell.classList.add("selected");
+    }
+    drawHistoryCurve();
+  }
+
+  function clearHistorySelection() {
+    selectedHistoryBlocks.clear();
+    blockSelectGrid.querySelectorAll(".selected").forEach((cell) => {
+      cell.classList.remove("selected");
+    });
+  }
+
+  function buildHistoryBlockGrid(cols, rows) {
+    selectedHistoryBlocks.clear();
+    blockSelectGrid.innerHTML = "";
+    blockSelectGrid.style.gridTemplateColumns =
+      `repeat(${Math.max(1, cols)}, minmax(0, 1fr))`;
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const block = row * cols + col;
+        const cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "block-select-cell";
+        cell.dataset.block = String(block);
+        cell.title = `块 ${block}`;
+        cell.textContent = String(block);
+        blockSelectGrid.appendChild(cell);
+      }
+    }
+    drawHistoryCurve();
+  }
+
+  function handlePreviewMouseMove(event) {
+    if (!metadata || currentFrameId === null) {
+      hideBlockTooltip();
+      return;
+    }
+    const rect = previewCanvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      hideBlockTooltip();
+      return;
+    }
+
+    const scaleX = previewCanvas.width / rect.width;
+    const scaleY = previewCanvas.height / rect.height;
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left)) * scaleX;
+    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top)) * scaleY;
+    const col = Math.min(
+      metadata.cols - 1,
+      Math.floor(x / (previewCanvas.width / metadata.cols)),
+    );
+    const row = Math.min(
+      metadata.rows - 1,
+      Math.floor(y / (previewCanvas.height / metadata.rows)),
+    );
+    const blockIndex = row * metadata.cols + col;
+
+    blockTooltip.textContent = buildBlockTooltipText(blockIndex);
+    blockTooltip.hidden = false;
+
+    const stage = blockTooltip.parentElement;
+    const stageRect = stage.getBoundingClientRect();
+    let left = event.clientX - stageRect.left + 14;
+    let top = event.clientY - stageRect.top + 14;
+    const tooltipWidth = blockTooltip.offsetWidth;
+    const tooltipHeight = blockTooltip.offsetHeight;
+    if (left + tooltipWidth > stageRect.width - 4) {
+      left = event.clientX - stageRect.left - tooltipWidth - 8;
+    }
+    if (top + tooltipHeight > stageRect.height - 4) {
+      top = event.clientY - stageRect.top - tooltipHeight - 8;
+    }
+    blockTooltip.style.left = `${Math.max(4, left)}px`;
+    blockTooltip.style.top = `${Math.max(4, top)}px`;
+  }
+
+  function hideBlockTooltip() {
+    blockTooltip.hidden = true;
+  }
+
+  function buildBlockTooltipText(blockIndex) {
+    const col = blockIndex % metadata.cols;
+    const row = Math.floor(blockIndex / metadata.cols);
+    const frame = frameData[currentFrameId];
+    const brightness = frame && frame.blocks ? Number(frame.blocks[blockIndex]) : NaN;
+    const lines = [`块 ${blockIndex}（行 ${row}，列 ${col}）`];
+    if (Number.isFinite(brightness)) {
+      lines.push(`亮度 ${formatHistoryNumber(brightness)}`);
+    }
+
+    const detect = currentDetect;
+    if (!detect || detect.group_count <= 0) {
+      lines.push("暂无检测数据");
+      return lines.join("\n");
+    }
+
+    lines.push(`有效组 ${detect.valid_group_count[blockIndex]} / ${detect.group_count}`);
+    lines.push(`flip ${detect.flip_count[blockIndex]} / ${detect.min_match_groups}`);
+    lines.push(
+      `same_pattern_ratio ${formatHistoryNumber(detect.sign_flip_ratio[blockIndex])} / ` +
+      `${formatHistoryNumber(detect.same_pattern_ratio)}`,
+    );
+    lines.push(
+      `CV ${formatHistoryNumber(detect.diff_cv[blockIndex])} / ` +
+      `${formatHistoryNumber(detect.max_group_amp_cv)}`,
+    );
+    if (Number.isFinite(detect.mean_abs_diff[blockIndex])) {
+      lines.push(`平均振幅差 ${formatHistoryNumber(detect.mean_abs_diff[blockIndex])}`);
+    }
+
+    const groups = Array.isArray(detect.groups) ? detect.groups : [];
+    const groupAmpPass = detect.group_amp_pass[blockIndex] || [];
+    const groupSlope = detect.group_slope[blockIndex] || [];
+    const groupValid = detect.group_valid[blockIndex] || [];
+    const groupDominant = detect.group_dominant[blockIndex] || [];
+    const groupSign = detect.group_sign[blockIndex] || [];
+    for (let g = 0; g < groups.length; g += 1) {
+      const group = groups[g];
+      const ampPass = groupAmpPass[g] ?? 0;
+      const slope = groupSlope[g];
+      const slopeText = Number.isFinite(slope)
+        ? formatHistoryNumber(slope)
+        : "-";
+      const status = groupValid[g] ? "有效" : "无效";
+      const dominant = groupDominant[g] ? "·主导" : "";
+      const sign = groupSign[g] || "-";
+      lines.push(
+        `G${g} 帧${group.start_frame}-${group.end_frame} ` +
+        `amp${ampPass}/${detect.position_count} ` +
+        `slope${slopeText}/${formatHistoryNumber(detect.slope_max)} ` +
+        `${status}${dominant} sign${sign}`,
+      );
+    }
+
+    lines.push(detect.block_flags[blockIndex] ? "判定：命中" : "判定：未命中");
+    return lines.join("\n");
+  }
+
+  function formatHistoryNumber(value) {
+    return Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2);
+  }
+
+  function hexToRgba(hex, alpha) {
+    const value = parseInt(hex.slice(1), 16);
+    const red = (value >> 16) & 255;
+    const green = (value >> 8) & 255;
+    const blue = value & 255;
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+  }
+
+  function resetHistoryPanel() {
+    selectedHistoryBlocks.clear();
+    blockSelectGrid.innerHTML = "";
+    blockSelectGrid.style.gridTemplateColumns = "";
+    historyLegend.textContent = "";
+    historySummary.textContent = "等待数据";
+    const ctx = historyCanvas.getContext("2d");
+    ctx.clearRect(0, 0, historyCanvas.width, historyCanvas.height);
+  }
+
+  async function loadDefaultDetectorOptions() {
+    try {
+      const response = await fetch("/api/options?fps=30");
+      if (!response.ok) return;
+      const payload = await response.json();
+      const options = Array.isArray(payload.options) ? payload.options : [];
+      if (options.length === 0) return;
+      const preferred =
+        options.find((item) => Number(item.detection_frequency) === 50) ||
+        options[0];
+      applyDetectorOptions(options, preferred.params || {});
+    } catch (error) {
+      // 接口不可用时保留静态 50 Hz 占位项。
+    }
+  }
+
   function avgFinite(array) {
     let sum = 0;
     let count = 0;
@@ -818,4 +1365,6 @@
     frameStatus.textContent = statusText;
     if (detail) stats.textContent = detail;
   }
+
+  loadDefaultDetectorOptions();
 })();

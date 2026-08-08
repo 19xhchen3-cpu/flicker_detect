@@ -58,7 +58,9 @@
             </label>
             <label>
               检测频率
-              <input id="detectionFrequencyInput" data-param="detection_frequency" type="number" min="1" step="1" value="50">
+              <select id="detectionFrequencyInput" data-param="detection_frequency">
+                <option value="50">50 Hz</option>
+              </select>
             </label>
             <label>
               group_size
@@ -98,6 +100,36 @@
             </label>
           </div>
         </section>
+
+        <section class="panel">
+          <details class="param-help" open>
+            <summary>参数说明</summary>
+            <dl>
+              <dt>detection_frequency</dt>
+              <dd>目标驱动频率 fd，检测使用光强频率 2×fd 折算分组。</dd>
+              <dt>group_size</dt>
+              <dd>一个周期组包含的帧数，等于视在周期 P+1。</dd>
+              <dt>min_frames</dt>
+              <dd>启动检测所需的最少历史帧数，也是缓存和诊断窗口长度。</dd>
+              <dt>min_match_groups</dt>
+              <dd>主导符号模式必须超过的最少组数。</dd>
+              <dt>min_group_amp_ratio</dt>
+              <dd>最低有效振幅占 y_max 的比例，用于生成绝对振幅门槛。</dd>
+              <dt>min_amp_pos_ratio</dt>
+              <dd>周期组内必须通过振幅门的位置比例，0 表示禁用。</dd>
+              <dt>same_pattern_ratio</dt>
+              <dd>主导符号模式组数占有效组数的最低比例，0 表示禁用。</dd>
+              <dt>slope_max</dt>
+              <dd>周期首尾允许的最大平均变化率，单位亮度/帧，0 表示禁用。</dd>
+              <dt>max_group_amp_cv</dt>
+              <dd>跨周期允许的最大振幅变异系数，0 表示禁用。</dd>
+              <dt>y_max</dt>
+              <dd>输入亮度满量程，当前为 14bit，即 16383。</dd>
+              <dt>cols / rows</dt>
+              <dd>画面分块列数和行数，块总数等于 cols×rows。</dd>
+            </dl>
+          </details>
+        </section>
       </aside>
 
       <section class="content">
@@ -123,7 +155,10 @@
               检测块
             </label>
           </div>
-          <canvas id="previewCanvas" width="320" height="240"></canvas>
+          <div class="preview-stage">
+            <canvas id="previewCanvas" width="320" height="240"></canvas>
+            <div id="blockTooltip" class="block-tooltip" hidden></div>
+          </div>
           <div id="stats" class="stats"></div>
         </section>
 
@@ -133,6 +168,19 @@
             <span id="chartSummary" class="chart-summary">等待数据</span>
           </div>
           <canvas id="chartCanvas" width="900" height="180"></canvas>
+        </section>
+
+        <section class="panel history-panel">
+          <div class="chart-header">
+            <h2>历史亮度</h2>
+            <div class="history-actions">
+              <span id="historySummary" class="chart-summary">等待数据</span>
+              <button id="clearHistoryBlocks" type="button">清空选择</button>
+            </div>
+          </div>
+          <div id="blockSelectGrid" class="block-select-grid"></div>
+          <div id="historyLegend" class="history-legend"></div>
+          <canvas id="historyCanvas" width="900" height="220"></canvas>
         </section>
       </section>
     </section>

@@ -17,7 +17,9 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 
 from flicker_detect.detector_config import (
+    DETECTION_FREQUENCIES_HZ,
     PARAMETER_TABLE,
+    group_size_for,
     lookup_detector_parameters,
 )
 from flicker_detect.preprocess import inspect_video, iter_video_frames
@@ -45,8 +47,20 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """提供前端静态页面。"""
         parsed = urlparse(self.path)
+        if parsed.path == "/api/options":
+            self._handle_detector_options(parsed.query)
+            return
         relative = parsed.path.lstrip("/") or "index.html"
         self._send_static(relative)
+
+    def _handle_detector_options(self, query: str) -> None:
+        """返回指定 fps 下可检测频率及完整参数。"""
+        try:
+            fps = float(parse_qs(query).get("fps", ["30"])[0])
+        except (TypeError, ValueError):
+            self._send_json(400, {"error": "Invalid fps."})
+            return
+        self._send_json(200, {"options": self._detector_options(fps)})
 
     def do_POST(self) -> None:
         """接收视频文件并流式执行前置转换。"""
@@ -111,6 +125,7 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
                 "gamma": metadata.gamma,
                 "y_max": metadata.y_max,
                 "detector_params": self._detector_params(metadata.fps),
+                "detector_options": self._detector_options(metadata.fps),
             }
         )
 
@@ -175,6 +190,29 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
             params = lookup_detector_parameters(round(fps), 50)
         except KeyError:
             params = PARAMETER_TABLE[(30, 50)]
+        return self._params_dict(params)
+
+    def _detector_options(self, fps: float) -> list[dict[str, object]]:
+        """返回当前帧率下所有可查表检测频率及完整参数。"""
+        fps_mode = round(fps)
+        options: list[dict[str, object]] = []
+        for detection_frequency in DETECTION_FREQUENCIES_HZ:
+            group_size = group_size_for(fps_mode, detection_frequency)
+            if group_size is None:
+                continue
+            params = lookup_detector_parameters(fps_mode, detection_frequency)
+            values = self._params_dict(params)
+            values["group_size"] = group_size
+            options.append(
+                {
+                    "detection_frequency": detection_frequency,
+                    "params": values,
+                }
+            )
+        return options
+
+    def _params_dict(self, params) -> dict[str, object]:
+        """把 DetectorParameters 转成前端可用的参数字典。"""
         return {
             "fps": params.fps,
             "detection_frequency": params.detection_frequency,
