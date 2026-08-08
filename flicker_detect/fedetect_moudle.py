@@ -243,7 +243,8 @@ def evaluate_group_validity(
                 np.abs(valid_slope) <= params.slope_max
             )
     else:
-        slope_group_ok = np.ones((group_count, block_count), dtype=bool)
+        # slope_max=0 只禁用闭合斜率门，K-of-N 振幅门仍然生效。
+        slope_group_ok = amp_group_ok.copy()
 
     # 渐进式前提下，slope_group_ok 只可能对通过 K-of-N 的组为 True，
     # 因此它本身就是“同时通过两个门”的候选组集合。

@@ -18,6 +18,7 @@
   const fileInput = document.getElementById("videoInput");
   const loadButton = document.getElementById("loadButton");
   const startButton = document.getElementById("startButton");
+  const recomputeButton = document.getElementById("recomputeButton");
   const fileName = document.getElementById("fileName");
   const gammaInput = document.getElementById("gammaInput");
   const colsInput = document.getElementById("colsInput");
@@ -90,11 +91,18 @@
     }
     resetProgress();
     resetScrubber();
+    recomputeButton.disabled = true;
     drawChart();
     resetHistoryPanel();
   });
 
   startButton.addEventListener("click", startConversion);
+
+  recomputeButton.addEventListener("click", () => {
+    if (!metadata || frameData.length === 0) return;
+    setStatus("手动重算中...", stats.textContent);
+    runDetection();
+  });
 
   frameScrubber.addEventListener("input", () => {
     const frameId = Number(frameScrubber.value);
@@ -130,6 +138,10 @@
     if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
   });
 
+  [frameScrubber, blockOpacityInput, detectOpacityInput].forEach(
+    attachWheelToRange,
+  );
+
   document.querySelectorAll("[data-param]").forEach((input) => {
     input.addEventListener("input", scheduleDetection);
     input.addEventListener("change", scheduleDetection);
@@ -164,6 +176,7 @@
     preprocessDirty = false;
     resetProgress();
     resetScrubber();
+    recomputeButton.disabled = true;
     setStatus("解析中...", "");
     drawChart();
     resetHistoryPanel();
@@ -241,6 +254,7 @@
       setStatus(`完成，共处理 ${payload.processed} 帧`, "");
       runDetection();
       if (lastFrame >= 0) drawCurrentFrame(lastFrame);
+      recomputeButton.disabled = false;
     }
   }
 
@@ -260,6 +274,11 @@
   }
 
   function applyDetectorParams(params) {
+    const rawYMax = numberOr(params.y_max, 16383);
+    const yMaxBit = numberOr(
+      params.y_max_bit,
+      rawYMax > 1 ? Math.round(Math.log2(rawYMax + 1)) : 14,
+    );
     const values = {
       detection_frequency: numberOr(params.detection_frequency, 50),
       group_size: numberOr(params.group_size, 4),
@@ -270,7 +289,7 @@
       same_pattern_ratio: numberOr(params.same_pattern_ratio, 0.8),
       slope_max: numberOr(params.slope_max, 10),
       max_group_amp_cv: numberOr(params.max_group_amp_cv, 0.4),
-      y_max: numberOr(params.y_max, 16383),
+      y_max_bit: yMaxBit,
     };
     Object.entries(values).forEach(([key, value]) => {
       const input = document.querySelector(`[data-param="${key}"]`);
@@ -321,6 +340,9 @@
     });
     params.group_size = Math.max(2, Math.round(params.group_size || 4));
     params.min_frames = Math.max(1, Math.round(params.min_frames || 30));
+    const yMaxBit = Math.max(1, Math.round(params.y_max_bit || 14));
+    params.y_max = (2 ** yMaxBit) - 1;
+    params.y_max_bit = yMaxBit;
     return params;
   }
 
@@ -506,7 +528,7 @@
         }
       }
     } else {
-      for (let g = 0; g < groupCount; g += 1) slopeGroupOk[g].fill(1);
+      for (let g = 0; g < groupCount; g += 1) slopeGroupOk[g].set(ampGroupOk[g]);
     }
 
     for (let b = 0; b < blockCount; b += 1) {
@@ -1352,6 +1374,26 @@
   function resetProgress() {
     progressFill.style.width = "0%";
     stats.textContent = "";
+  }
+
+  function attachWheelToRange(input) {
+    input.addEventListener(
+      "wheel",
+      (event) => {
+        if (input.disabled) return;
+        event.preventDefault();
+        const step = Number(input.step) || 1;
+        const min = Number(input.min);
+        const max = Number(input.max);
+        const delta = event.deltaY < 0 ? step : -step;
+        const next = Math.min(max, Math.max(min, Number(input.value) + delta));
+        if (next !== Number(input.value)) {
+          input.value = String(next);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      },
+      { passive: false },
+    );
   }
 
   function resetScrubber() {

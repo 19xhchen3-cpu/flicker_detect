@@ -28,7 +28,7 @@ def make_params(*, block_count: int = 1, **overrides) -> DetectorParameters:
         "same_pattern_ratio": 0.5,
         "slope_max": 10.0,
         "max_group_amp_cv": 0.4,
-        "y_max": 16383,
+        "y_max_bit": 14,
         "cols": block_count,
         "rows": 1,
     }
@@ -231,6 +231,21 @@ class FedetectMoudleGroupingTest(unittest.TestCase):
         self.assertTrue(np.all(np.isnan(validity["slope"])))
         self.assertTrue(validity["dominant_ok"][0])
         self.assertTrue(validity["cv_ok"][0])
+
+    def test_evaluate_group_validity_zero_slope_max_keeps_amp_gate(self) -> None:
+        """禁用斜率门时，K-of-N 振幅门仍应过滤无效组。"""
+        history = np.zeros((4, 1), dtype=np.float64)
+        result = group_frames(history, group_size=4)
+        features = build_features(result["groups"])
+        validity = evaluate_group_validity(
+            result,
+            features,
+            make_params(slope_max=0.0),
+        )
+
+        self.assertFalse(np.any(validity["amp_group_ok"]))
+        self.assertFalse(np.any(validity["group_valid"]))
+        self.assertFalse(validity["dominant_ok"][0])
 
     def test_evaluate_group_validity_cv_rejects_unstable_amplitude(self) -> None:
         history = np.array(

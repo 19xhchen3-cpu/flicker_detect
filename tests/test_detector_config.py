@@ -23,6 +23,11 @@ class DetectorConfigTest(unittest.TestCase):
         """14 bit 满量程应为 16383。"""
         self.assertEqual(Y_MAX, 16383)
 
+    def test_y_max_bit_derived_from_full_scale(self) -> None:
+        """满量程 16383 应反推出 14 bit。"""
+        params = lookup_detector_parameters(30, 50)
+        self.assertEqual(params.y_max_bit, 14)
+
     def test_group_size_for_30fps_50hz_drive(self) -> None:
         """30fps、50Hz 驱动频率对应 group_size 4。"""
         self.assertEqual(group_size_for(30, 50), 4)
@@ -55,8 +60,8 @@ class DetectorConfigTest(unittest.TestCase):
         self.assertEqual(params.slope_max, 10.0)
         self.assertEqual(params.max_group_amp_cv, 0.4)
         self.assertEqual(params.y_max, Y_MAX)
-        self.assertEqual(params.cols, 12)
-        self.assertEqual(params.rows, 16)
+        self.assertEqual(params.cols, 16)
+        self.assertEqual(params.rows, 12)
 
     def test_unfilled_cell_keeps_group_size_zero(self) -> None:
         """未填写 group_size 的格子应保持 0。"""

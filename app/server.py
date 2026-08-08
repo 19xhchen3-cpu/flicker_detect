@@ -225,6 +225,7 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
             "slope_max": params.slope_max,
             "max_group_amp_cv": params.max_group_amp_cv,
             "y_max": params.y_max,
+            "y_max_bit": params.y_max_bit,
             "cols": params.cols,
             "rows": params.rows,
         }

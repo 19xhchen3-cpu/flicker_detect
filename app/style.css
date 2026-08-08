@@ -80,6 +80,23 @@ input {
   font-weight: 650;
 }
 
+.detector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.detector-header h2 {
+  margin: 0;
+}
+
+.detector-header button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .row {
   display: flex;
   align-items: center;
