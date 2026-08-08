@@ -10,12 +10,15 @@ import json
 import base64
 import tempfile
 import threading
+from dataclasses import fields
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import cv2
 
+from flicker_app.engine import FlickerEngine, FlickerParams
+from flicker_app.server import _params_from_query, _stripe_frame_from_query
 from flicker_detect.detector_config import (
     DETECTION_FREQUENCIES_HZ,
     PARAMETER_TABLE,
@@ -26,8 +29,9 @@ from flicker_detect.preprocess import inspect_video, iter_video_frames
 
 APP_DIR = Path(__file__).resolve().parent
 
-# 默认使用 30fps、50Hz 参数表里的 cols/rows，当前填写值为 12x16。
+# 默认使用 30fps、50Hz 参数表里的 cols/rows，当前填写值为 16x12。
 DEFAULT_PARAMS = PARAMETER_TABLE[(30, 50)]
+ENGINE = FlickerEngine()
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -50,6 +54,9 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/options":
             self._handle_detector_options(parsed.query)
             return
+        if parsed.path == "/api/simulate":
+            self._handle_simulate(parsed.query)
+            return
         relative = parsed.path.lstrip("/") or "index.html"
         self._send_static(relative)
 
@@ -61,6 +68,33 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Invalid fps."})
             return
         self._send_json(200, {"options": self._detector_options(fps)})
+
+    def _handle_simulate(self, query: str) -> None:
+        """处理频闪仿真 API，返回曲线、帧强度和卷帘条纹。"""
+        try:
+            params = _params_from_query(query)
+            stripe_frame_index = _stripe_frame_from_query(query)
+        except ValueError as exc:
+            self._send_json(400, {"status": "error", "error": str(exc)})
+            return
+
+        error = ENGINE.validate(params)
+        if error:
+            self._send_json(400, {"status": "error", "error": error})
+            return
+
+        result = ENGINE.calculate(params, stripe_frame_index=stripe_frame_index)
+        self._send_json(
+            200,
+            {
+                "status": "ok",
+                "result": result.to_dict(),
+                "params": {
+                    field.name: getattr(params, field.name)
+                    for field in fields(FlickerParams)
+                },
+            },
+        )
 
     def do_POST(self) -> None:
         """接收视频文件并流式执行前置转换。"""

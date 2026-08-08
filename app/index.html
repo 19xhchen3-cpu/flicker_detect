@@ -15,180 +15,223 @@
       <p>视频预处理与周期频闪检测</p>
     </header>
 
-    <section class="layout">
-      <aside class="sidebar">
-        <section class="panel">
-          <h2>视频</h2>
-          <input id="videoInput" type="file" accept="video/*" hidden>
-          <div class="row">
-            <button id="loadButton" type="button">加载视频</button>
-            <span id="fileName" class="file-name">未选择视频</span>
-          </div>
-          <button id="startButton" type="button" disabled>开始解析</button>
-          <div id="progressWrap" class="progress-wrap">
-            <div id="progressFill" class="progress-fill"></div>
-          </div>
-          <div id="frameStatus" class="frame-status">等待加载视频</div>
-        </section>
+    <nav class="app-nav" aria-label="视图切换">
+      <button id="navDetect" class="nav-tab active" type="button">视频检测</button>
+      <button id="navSimulate" class="nav-tab" type="button">频闪仿真</button>
+    </nav>
 
-        <section class="panel">
-          <h2>预处理参数</h2>
-          <div class="param-grid">
-            <label>
-              gamma
-              <input id="gammaInput" type="number" min="0.1" max="5" step="0.1" value="1">
-            </label>
-            <label>
-              cols
-              <input id="colsInput" type="number" min="1" max="200" step="1" value="12">
-            </label>
-            <label>
-              rows
-              <input id="rowsInput" type="number" min="1" max="200" step="1" value="16">
-            </label>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="detector-header">
-            <h2>检测参数</h2>
-            <button id="recomputeButton" type="button" disabled>重算</button>
-          </div>
-          <div class="param-grid">
-            <label>
-              fps
-              <input id="fpsInput" type="number" readonly value="30">
-            </label>
-            <label>
-              检测频率
-              <select id="detectionFrequencyInput" data-param="detection_frequency">
-                <option value="50">50 Hz</option>
-              </select>
-            </label>
-            <label>
-              group_size
-              <input id="groupSizeInput" data-param="group_size" type="number" min="2" step="1" value="4">
-            </label>
-            <label>
-              min_frames
-              <input id="minFramesInput" data-param="min_frames" type="number" min="1" step="1" value="30">
-            </label>
-            <label>
-              min_match_groups
-              <input id="minMatchGroupsInput" data-param="min_match_groups" type="number" min="0" step="1" value="2">
-            </label>
-            <label>
-              min_group_amp_ratio
-              <input id="minGroupAmpRatioInput" data-param="min_group_amp_ratio" type="number" min="0" step="0.0001" value="0.001">
-            </label>
-            <label>
-              min_amp_pos_ratio
-              <input id="minAmpPosRatioInput" data-param="min_amp_pos_ratio" type="number" min="0" step="0.01" value="0.5">
-            </label>
-            <label>
-              same_pattern_ratio
-              <input id="samePatternRatioInput" data-param="same_pattern_ratio" type="number" min="0" max="1" step="0.01" value="0.8">
-            </label>
-            <label>
-              slope_max
-              <input id="slopeMaxInput" data-param="slope_max" type="number" min="0" step="0.1" value="10">
-            </label>
-            <label>
-              max_group_amp_cv
-              <input id="maxGroupAmpCvInput" data-param="max_group_amp_cv" type="number" min="0" step="0.01" value="0.4">
-            </label>
-            <label>
-              y_max (bit)
-              <input id="yMaxInput" data-param="y_max_bit" type="number" min="1" max="32" step="1" value="14">
-            </label>
-          </div>
-        </section>
-
-        <section class="panel">
-          <details class="param-help" open>
-            <summary>参数说明</summary>
-            <dl>
-              <dt>detection_frequency</dt>
-              <dd>目标驱动频率 fd，检测使用光强频率 2×fd 折算分组。</dd>
-              <dt>group_size</dt>
-              <dd>一个周期组包含的帧数，等于视在周期 P+1。</dd>
-              <dt>min_frames</dt>
-              <dd>启动检测所需的最少历史帧数，也是缓存和诊断窗口长度。</dd>
-              <dt>min_match_groups</dt>
-              <dd>主导符号模式必须超过的最少组数。</dd>
-              <dt>min_group_amp_ratio</dt>
-              <dd>最低有效振幅占 y_max 的比例，用于生成绝对振幅门槛。</dd>
-              <dt>min_amp_pos_ratio</dt>
-              <dd>周期组内必须通过振幅门的位置比例，0 表示禁用。</dd>
-              <dt>same_pattern_ratio</dt>
-              <dd>主导符号模式组数占有效组数的最低比例，0 表示禁用。</dd>
-              <dt>slope_max</dt>
-              <dd>周期首尾允许的最大平均变化率，单位亮度/帧，0 表示禁用。</dd>
-              <dt>max_group_amp_cv</dt>
-              <dd>跨周期允许的最大振幅变异系数，0 表示禁用。</dd>
-              <dt>y_max (bit)</dt>
-              <dd>输入亮度位深，后端转换为满量程，例如 14bit 即 16383。</dd>
-              <dt>cols / rows</dt>
-              <dd>画面分块列数和行数，块总数等于 cols×rows。</dd>
-            </dl>
-          </details>
-        </section>
-      </aside>
-
-      <section class="content">
-        <section class="panel preview-panel">
-          <div class="view-controls">
-            <label>
-              帧
-              <input id="frameScrubber" type="range" min="0" max="0" value="0" step="1" disabled>
-            </label>
-            <span id="scrubberLabel" class="scrubber-label">Frame 0/0</span>
-            <label>
-              亮度块不透明度
-              <input id="blockOpacityInput" type="range" min="0" max="100" value="50" step="1">
-            </label>
-            <span id="blockOpacityLabel" class="scrubber-label">50%</span>
-            <label>
-              检测块不透明度
-              <input id="detectOpacityInput" type="range" min="0" max="100" value="80" step="1">
-            </label>
-            <span id="detectOpacityLabel" class="scrubber-label">80%</span>
-            <label class="check-label">
-              <input id="showDetectedInput" type="checkbox" checked>
-              检测块
-            </label>
-          </div>
-          <div class="preview-stage">
-            <canvas id="previewCanvas" width="320" height="240"></canvas>
-            <div id="blockTooltip" class="block-tooltip" hidden></div>
-          </div>
-          <div id="stats" class="stats"></div>
-        </section>
-
-        <section class="panel chart-panel">
-          <div class="chart-header">
-            <h2>检测块数</h2>
-            <span id="chartSummary" class="chart-summary">等待数据</span>
-          </div>
-          <canvas id="chartCanvas" width="900" height="180"></canvas>
-        </section>
-
-        <section class="panel history-panel">
-          <div class="chart-header">
-            <h2>历史亮度</h2>
-            <div class="history-actions">
-              <span id="historySummary" class="chart-summary">等待数据</span>
-              <button id="clearHistoryBlocks" type="button">清空选择</button>
+    <section id="detectView" class="view">
+      <section class="layout">
+        <aside class="sidebar">
+          <section class="panel">
+            <h2>视频</h2>
+            <input id="videoInput" type="file" accept="video/*" hidden>
+            <div class="row">
+              <button id="loadButton" type="button">加载视频</button>
+              <span id="fileName" class="file-name">未选择视频</span>
             </div>
-          </div>
-          <div id="blockSelectGrid" class="block-select-grid"></div>
-          <div id="historyLegend" class="history-legend"></div>
-          <canvas id="historyCanvas" width="900" height="220"></canvas>
+            <button id="startButton" type="button" disabled>开始解析</button>
+            <div id="progressWrap" class="progress-wrap">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div id="frameStatus" class="frame-status">等待加载视频</div>
+          </section>
+
+          <section class="panel">
+            <h2>预处理参数</h2>
+            <div class="param-grid">
+              <label>
+                gamma
+                <input id="gammaInput" type="number" min="0.1" max="5" step="0.1" value="1">
+              </label>
+              <label>
+                cols
+                <input id="colsInput" type="number" min="1" max="200" step="1" value="12">
+              </label>
+              <label>
+                rows
+                <input id="rowsInput" type="number" min="1" max="200" step="1" value="16">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="detector-header">
+              <h2>检测参数</h2>
+              <button id="recomputeButton" type="button" disabled>重算</button>
+            </div>
+            <div class="param-grid">
+              <label>
+                fps
+                <input id="fpsInput" type="number" readonly value="30">
+              </label>
+              <label>
+                检测频率
+                <select id="detectionFrequencyInput" data-param="detection_frequency">
+                  <option value="50">50 Hz</option>
+                </select>
+              </label>
+              <label>
+                group_size
+                <input id="groupSizeInput" data-param="group_size" type="number" min="2" step="1" value="4">
+              </label>
+              <label>
+                min_frames
+                <input id="minFramesInput" data-param="min_frames" type="number" min="1" step="1" value="30">
+              </label>
+              <label>
+                min_match_groups
+                <input id="minMatchGroupsInput" data-param="min_match_groups" type="number" min="0" step="1" value="2">
+              </label>
+              <label>
+                min_group_amp_ratio
+                <input id="minGroupAmpRatioInput" data-param="min_group_amp_ratio" type="number" min="0" step="0.0001" value="0.001">
+              </label>
+              <label>
+                min_amp_pos_ratio
+                <input id="minAmpPosRatioInput" data-param="min_amp_pos_ratio" type="number" min="0" step="0.01" value="0.5">
+              </label>
+              <label>
+                same_pattern_ratio
+                <input id="samePatternRatioInput" data-param="same_pattern_ratio" type="number" min="0" max="1" step="0.01" value="0.8">
+              </label>
+              <label>
+                slope_max
+                <input id="slopeMaxInput" data-param="slope_max" type="number" min="0" step="0.1" value="10">
+              </label>
+              <label>
+                max_group_amp_cv
+                <input id="maxGroupAmpCvInput" data-param="max_group_amp_cv" type="number" min="0" step="0.01" value="0.4">
+              </label>
+              <label>
+                y_max (bit)
+                <input id="yMaxInput" data-param="y_max_bit" type="number" min="1" max="32" step="1" value="14">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <details class="param-help" open>
+              <summary>参数说明</summary>
+              <dl>
+                <dt>detection_frequency</dt>
+                <dd>目标驱动频率 fd，检测使用光强频率 2×fd 折算分组。</dd>
+                <dt>group_size</dt>
+                <dd>一个周期组包含的帧数，等于视在周期 P+1。</dd>
+                <dt>min_frames</dt>
+                <dd>启动检测所需的最少历史帧数，也是缓存和诊断窗口长度。</dd>
+                <dt>min_match_groups</dt>
+                <dd>主导符号模式必须超过的最少组数。</dd>
+                <dt>min_group_amp_ratio</dt>
+                <dd>最低有效振幅占 y_max 的比例，用于生成绝对振幅门槛。</dd>
+                <dt>min_amp_pos_ratio</dt>
+                <dd>周期组内必须通过振幅门的位置比例，0 表示禁用。</dd>
+                <dt>same_pattern_ratio</dt>
+                <dd>主导符号模式组数占有效组数的最低比例，0 表示禁用。</dd>
+                <dt>slope_max</dt>
+                <dd>周期首尾允许的最大平均变化率，单位亮度/帧，0 表示禁用。</dd>
+                <dt>max_group_amp_cv</dt>
+                <dd>跨周期允许的最大振幅变异系数，0 表示禁用。</dd>
+                <dt>y_max (bit)</dt>
+                <dd>输入亮度位深，后端转换为满量程，例如 14bit 即 16383。</dd>
+                <dt>cols / rows</dt>
+                <dd>画面分块列数和行数，块总数等于 cols×rows。</dd>
+              </dl>
+            </details>
+          </section>
+        </aside>
+
+        <section class="content">
+          <section class="panel preview-panel">
+            <div class="view-controls">
+              <label>
+                帧
+                <input id="frameScrubber" type="range" min="0" max="0" value="0" step="1" disabled>
+              </label>
+              <span id="scrubberLabel" class="scrubber-label">Frame 0/0</span>
+              <label>
+                亮度块不透明度
+                <input id="blockOpacityInput" type="range" min="0" max="100" value="50" step="1">
+              </label>
+              <span id="blockOpacityLabel" class="scrubber-label">50%</span>
+              <label>
+                检测块不透明度
+                <input id="detectOpacityInput" type="range" min="0" max="100" value="80" step="1">
+              </label>
+              <span id="detectOpacityLabel" class="scrubber-label">80%</span>
+              <label class="check-label">
+                <input id="showDetectedInput" type="checkbox" checked>
+                检测块
+              </label>
+            </div>
+            <div class="preview-stage">
+              <canvas id="previewCanvas" width="320" height="240"></canvas>
+              <div id="blockTooltip" class="block-tooltip" hidden></div>
+            </div>
+            <div id="stats" class="stats"></div>
+          </section>
+
+          <section class="panel chart-panel">
+            <div class="chart-header">
+              <h2>检测块数</h2>
+              <span id="chartSummary" class="chart-summary">等待数据</span>
+            </div>
+            <canvas id="chartCanvas" width="900" height="180"></canvas>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="chart-header">
+              <h2>历史亮度</h2>
+              <div class="history-actions">
+                <span id="historySummary" class="chart-summary">等待数据</span>
+                <button id="clearHistoryBlocks" type="button">清空选择</button>
+              </div>
+            </div>
+            <div id="blockSelectGrid" class="block-select-grid"></div>
+            <div id="historyLegend" class="history-legend"></div>
+            <canvas id="historyCanvas" width="900" height="220"></canvas>
+          </section>
         </section>
       </section>
+    </section>
+
+    <section id="simulateView" class="view" hidden>
+      <div class="sim-layout">
+        <aside class="sim-panel">
+          <header class="sim-panel-header">
+            <h2>频闪仿真</h2>
+            <button id="resetButton" type="button" title="重置参数">重置</button>
+          </header>
+          <div id="parameterRows" class="params"></div>
+        </aside>
+        <section class="sim-workspace">
+          <div id="plotGrid" class="plot-grid">
+            <div class="plot">
+              <canvas class="plot-canvas" data-series="dc" aria-label="DC 光强"></canvas>
+            </div>
+            <div class="plot">
+              <canvas class="plot-canvas" data-series="ac" aria-label="AC 光强"></canvas>
+            </div>
+            <div class="plot">
+              <canvas class="plot-canvas" data-series="total" aria-label="合成光源"></canvas>
+            </div>
+            <div class="plot">
+              <canvas class="plot-canvas" data-series="frame" aria-label="帧强度"></canvas>
+            </div>
+            <div class="plot plot-wide">
+              <canvas class="plot-canvas" data-series="stripe" aria-label="单帧卷帘条纹"></canvas>
+            </div>
+          </div>
+          <footer class="status">
+            <span id="statusText">就绪</span>
+            <span id="metricsText"></span>
+          </footer>
+        </section>
+      </div>
     </section>
   </main>
 
   <script src="/app.js"></script>
+  <script src="/simulate.js"></script>
 </body>
 </html>

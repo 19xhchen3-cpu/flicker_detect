@@ -19,6 +19,10 @@
   const loadButton = document.getElementById("loadButton");
   const startButton = document.getElementById("startButton");
   const recomputeButton = document.getElementById("recomputeButton");
+  const navDetect = document.getElementById("navDetect");
+  const navSimulate = document.getElementById("navSimulate");
+  const detectView = document.getElementById("detectView");
+  const simulateView = document.getElementById("simulateView");
   const fileName = document.getElementById("fileName");
   const gammaInput = document.getElementById("gammaInput");
   const colsInput = document.getElementById("colsInput");
@@ -103,6 +107,23 @@
     setStatus("手动重算中...", stats.textContent);
     runDetection();
   });
+
+  navDetect.addEventListener("click", () => switchView("detect"));
+  navSimulate.addEventListener("click", () => switchView("simulate"));
+
+  function switchView(view) {
+    const showDetect = view === "detect";
+    detectView.hidden = !showDetect;
+    simulateView.hidden = showDetect;
+    navDetect.classList.toggle("active", showDetect);
+    navSimulate.classList.toggle("active", !showDetect);
+    hideBlockTooltip();
+    if (!showDetect) {
+      window.requestAnimationFrame(() => {
+        if (window.redrawSimulation) window.redrawSimulation();
+      });
+    }
+  }
 
   frameScrubber.addEventListener("input", () => {
     const frameId = Number(frameScrubber.value);
