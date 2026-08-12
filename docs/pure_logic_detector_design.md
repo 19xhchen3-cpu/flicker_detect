@@ -62,6 +62,8 @@ def detect_window(
 ):
     P = group_size - 1
     G = (H - 1) // P if H > 0 else 0
+    if k_value == 0:
+        min_group_amp = 0.0  # 与当前 Python 实现一致，CV 位置过滤同步关闭
     flicker_block_num = 0
 
     if G <= 0:
@@ -92,9 +94,9 @@ def detect_window(
         # ---------- 1. 分组、特征、K-of-N、斜率 ----------
         for g in range(G):
             start = group_starts[g]
+            tail = group_starts[g] + P
             pass_count = 0
             amp_reached = False
-            closed = 0
 
             for p in range(P):
                 d = (
@@ -112,8 +114,6 @@ def detect_window(
                 else:
                     block_sign[idx] = 0
 
-                closed += d
-
                 # K-of-N 提前退出只跳过阈值比较，不跳过特征构建
                 if k_value > 0 and not amp_reached:
                     if a > min_group_amp:
@@ -121,7 +121,9 @@ def detect_window(
                         if pass_count >= k_value:
                             amp_reached = True
 
-            closure[g] = closed
+            first_slot = slot_order[start]
+            tail_slot = slot_order[tail]
+            closure[g] = history[hbase + tail_slot] - history[hbase + first_slot]
             amp_group_ok[g] = 1 if k_value == 0 else (amp_reached or pass_count >= k_value)
 
             slope_ok = amp_group_ok[g]
@@ -236,7 +238,7 @@ def detect_window(
 - `group_starts` 在函数内部计算一次。
 - 每个 block 只遍历自己的历史区间 `history[b * H + ...]`。
 - 每个 `(group, position)` 计算相邻帧亮度差 `d`，得到 `amp` 和 `sign`。
-- `closure` 累加同一个组内全部 `P` 个 diff，等价于 `last - first`。
+- `closure` 直接取周期组首尾帧亮度差 `last - first`，不再逐位置累加 diff。
 
 ### 4.2 K-of-N 提前退出
 
@@ -244,6 +246,8 @@ def detect_window(
 - 达到 `pass_count >= k_value` 后只停止阈值比较，仍然继续构建剩余 `diff/amp/sign/closure`。
 - 因此提前退出不会影响后续斜率、主导模式和 CV 所需数据。
 - `k_value == 0` 时门禁关闭，所有组直接通过振幅门。
+- `k_value == 0` 时，为了与当前 Python 实现保持一致，`min_group_amp` 同步置为
+  0，因此 CV 位置过滤也同时关闭；不要理解为只关闭 K-of-N 而保留 CV 振幅门槛。
 
 ### 4.3 闭合斜率
 
@@ -262,6 +266,8 @@ def detect_window(
 
 - 只对主导组计算。
 - 只有 `mean_amp > min_group_amp` 的位置参与 CV。
+- 当 `k_value == 0` 时，按 4.2 的约定 `min_group_amp` 为 0，等价于所有平均振幅
+  非零的位置都参与 CV。
 - 使用总体方差 `variance_sum / d_count`，与当前 `ddof=0` 一致。
 - `max_group_amp_cv == 0` 时门禁关闭。
 
