@@ -218,6 +218,9 @@
 - `fa = 0` 等有问题的频率/帧率组合通过配置表规避，算法不检测这些组合。
 - `avg_ratio_diff` 和 `avg_delta_diff` 按原始帧亮度的滑动窗口计算：比值取窗口最大值/最小值，极差取窗口最大值减最小值。
 - `slope_max = 0` 只禁用闭合斜率门，K-of-N 振幅门仍然生效；Python 与前端已统一该行为。
+- 主导模式平票语义：moudle1 计数版取"先达到最大计数的模式"（`>` 严格更新）；fedetect 等价类版取"最早枚举的候选类"，特殊排列（如 B,A,B,A,A,B）下可能选出不同主导类，导致 CV 结果与最终判定不同；`same_pattern_ratio >= 0.5` 时平票必被比例门槛拒绝（默认 0.8 已满足）。
+- 提前退出主导模式计数循环不可行：`best_size` 需为最终值（供 `flip_count` 诊断与 CV 成员收集使用）；安全剪枝为 `min_match_groups > 0` 且 `valid_group_count <= min_match_groups` 时整块跳过计数与 CV，阈值越高省得越多。
+- `min_match_groups` 与 `same_pattern_ratio` 约束同一量 `best_size`，等效 `best_size > max(min_match_groups, ratio × valid_count)`；有效组多时比例门槛主导，组少时数量门槛主导，只调一个会被另一个覆盖。
 
 ### 当前参数与待办状态
 
