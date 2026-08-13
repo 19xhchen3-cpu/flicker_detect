@@ -179,6 +179,7 @@ def detect_window(
                 valid_group_count += 1
 
         # ---------- 2. 主导符号模式 ----------
+        # 遍历全部的有效组，找到出现次数最多的那个组
         for local_index in range(valid_group_count):
             g = valid_group_indices[local_index]
             code = pattern[g]
@@ -190,6 +191,7 @@ def detect_window(
                 best_size = counts[code]
                 best_code = code
 
+        # 从绝对值和比例值检查这个最大特征组是否合格
         ratio = best_size / valid_group_count if valid_group_count > 0 else 0.0
         count_pass = min_match_groups == 0 or best_size > min_match_groups
         ratio_pass = (
