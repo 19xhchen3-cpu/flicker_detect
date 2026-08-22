@@ -222,7 +222,6 @@
 - `slope_max = 0` 只禁用闭合斜率门，K-of-N 振幅门仍然生效；Python 与前端已统一该行为。
 - 提前退出主导模式计数循环不可行：`best_size` 需为最终值（供 `flip_count` 诊断与 CV 成员收集使用）；安全剪枝为 `min_match_groups > 0` 且 `valid_group_count <= min_match_groups` 时整块跳过计数与 CV，阈值越高省得越多。
 - `min_match_groups` 与 `same_pattern_ratio` 约束同一量 `best_size`，等效 `best_size > max(min_match_groups, ratio × valid_count)`；有效组多时比例门槛主导，组少时数量门槛主导，只调一个会被另一个覆盖。
-- 计算时间优先优化顺序已调整为：安全剪枝 -> CV 单趟统计（Welford）-> 流式增量检测 -> C++ 数值替换；符号编码保留条件短循环，编码合并仅在 profiling 证明第二遍循环为瓶颈后实施。
 
 ### 当前参数与待办状态
 

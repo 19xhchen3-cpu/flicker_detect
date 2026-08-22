@@ -10,7 +10,7 @@
 - 主函数按 block 做外层循环，每个 block 内部完成所有阶段，不再生成跨 block 的大中间矩阵。
 - 所有数组在进入函数前预分配，函数内部只读写固定索引。
 - 保留当前 Python 实现的判定语义：分组方式、阈值比较、主导模式、CV 门限均不改变。
-- 本版先保留“每次对一个完整历史窗口做一次检测”的语义，流式/相位锁定优化放到后续单独设计。
+- 本版先保留“每次对一个完整历史窗口做一次检测”的语义。
 
 ## 2. 数据布局
 
@@ -237,8 +237,6 @@ def detect_window(
 - 每个 `(group, position)` 计算相邻帧亮度差 `d`，得到 `amp` 和符号 digit。
 - 符号模式编码保留为“斜率门通过后的条件短循环”，只对有效组再扫一遍 `P`
   个位置；不把编码合并进位置循环，避免为斜率不合格组也付出编码成本。
-- 若未来 profiling 证明第二遍循环开销才是瓶颈，再改为位置循环内直接累加
-  `code = code * 3 + digit`，并同步去掉 `block_sign/pattern` 数组。
 - `closure` 直接取周期组首尾帧亮度差 `last - first`，不再逐位置累加 diff。
 
 ### 4.2 K-of-N 提前退出
@@ -279,8 +277,6 @@ def detect_window(
 - 只对主导组计算。
 - 主导成员的收集（`valid_codes[i] == best_code`）与振幅求和合并为一遍遍历，
   不再单独扫描一遍有效组。
-- 计算时间优先时可进一步用 Welford 单趟统计，在收集主导组的同时维护均值与
-  平方偏差和，省掉第二趟 `variance_sum` 遍历；方差仍取 `ddof=0` 总体方差。
 - 只有 `mean_amp > min_group_amp` 的位置参与 CV。
 - 当 `k_value == 0` 时，按 4.2 的约定 `min_group_amp` 为 0，等价于所有平均振幅
   非零的位置都参与 CV。
@@ -292,45 +288,6 @@ def detect_window(
 - `block_ok` 最终写入 `block_flags[b]`。
 - `flicker_block_num` 在本函数内累计。
 - 诊断量通过可选输出数组写回，不进入判定路径。
-
-### 4.7 全门禁关闭且无诊断量时的短路
-
-- 当 `min_match_groups == 0`、`same_pattern_ratio == 0`、
-  `max_group_amp_cv == 0`，且 `flip_count/sign_flip_ratio/mean_abs_diff/diff_cv`
-  四个诊断量参数全部为 `None` 时，主导模式与 CV 门禁全部关闭。
-- 该配置下 `dominant_ok` 恒等于 `valid_count > 0`，`block_ok` 恒等于
-  `dominant_ok`（含 CV 禁用时的 `elif` 分支），因此可以直接短路：
-
-    # 阶段 1 内，有效组分支：
-    if group_valid[g]:
-        valid_codes.append(code)
-        valid_groups.append(g)
-        if not pattern_gates_disabled:
-            ...计数与 best 跟踪...
-
-    # 阶段 1 之后：
-    if pattern_gates_disabled:
-        block_ok = valid_count > 0
-    else:
-        ...主导模式门槛与 CV 完整路径...
-
-- 阶段 1（特征与 K-of-N/斜率门）仍需完整执行，因为 `valid_count` 由它决定；
-  短路只跳过符号模式计数与 CV。
-- 任一诊断量被请求时不能走该分支，否则诊断输出会与完整路径不一致。
-
-### 4.8 计算时间优先的优化顺序
-
-- 第一优先：安全剪枝。`min_match_groups > 0` 且
-  `valid_group_count <= min_match_groups` 时整块跳过计数与 CV，收益随
-  `min_match_groups` 增大而增加。
-- 第二优先：CV 单趟统计。主导成员收集、振幅求和、方差统计合并为一趟
-  `O(G×P)` 遍历，优先采用 Welford 保持数值稳定。
-- 第三优先：流式增量检测。当前每次调用都对完整历史窗口重算，跨帧复用已算过
-  的分组、符号编码与计数是更大的时间收益来源，后续单独设计。
-- 第四优先：C++ 数值替换。`sqrt` 改平方比较、浮点改整数/定点、固定 `P`
-  时展开位置循环。
-- 最后才是编码合并。只有 profiling 证明“第二遍编码循环的开销”是实际瓶颈时，
-  才把编码并入位置循环；该改动会增加斜率不合格组的无用编码计算。
 
 ## 5. 需要保持的边界语义
 
@@ -411,5 +368,3 @@ class HistoryBuffer:
 - `slot_order[h] = (oldest + h) % H` 把环形槽位映射成逻辑时间顺序；
 - `detect_window()` 内部统一使用 `slot_order` 访问历史，`group_starts` 仍表示逻辑帧号起点；
 - 丢帧、VFR 大间隔或场景突变时，可以重置 `valid_count` 和 `write_index`，避免把不连续历史拼进同一个检测窗口。
-
-本版暂不加入相位锁定、滚动直方图和低频次决策，这些属于下一步流式优化，应在当前单函数版本对齐后再设计。
