@@ -64,6 +64,7 @@
   let preprocessDirty = false;
   let selectedHistoryBlocks = new Set();
   let detectorOptions = [];
+  let currentSessionId = null;
 
   loadButton.addEventListener("click", () => {
     fileInput.click();
@@ -76,6 +77,7 @@
     detectionResults = [];
     currentDetect = null;
     currentFrameId = null;
+    currentSessionId = null;
     detailCache.clear();
     frameDetailVersion += 1;
     preprocessDirty = false;
@@ -214,18 +216,29 @@
     drawChart();
     resetHistoryPanel();
 
-    const query = new URLSearchParams({
-      name: selectedFile.name,
-      cols: colsInput.value,
-      rows: rowsInput.value,
-      gamma: gammaInput.value,
-    });
-
     try {
-      const response = await fetch(`/api/convert?${query.toString()}`, {
-        method: "POST",
-        body: selectedFile,
+      if (!currentSessionId) {
+        const sessionResponse = await fetch("/api/v1/sessions", {
+          method: "POST",
+        });
+        if (!sessionResponse.ok) throw new Error("创建会话失败");
+        const sessionPayload = await sessionResponse.json();
+        currentSessionId = sessionPayload.session_id;
+      }
+
+      const query = new URLSearchParams({
+        name: selectedFile.name,
+        cols: colsInput.value,
+        rows: rowsInput.value,
+        gamma: gammaInput.value,
       });
+      const response = await fetch(
+        `/api/v1/sessions/${currentSessionId}/video?${query.toString()}`,
+        {
+          method: "POST",
+          body: selectedFile,
+        },
+      );
 
       if (!response.ok || !response.body) {
         const error = await response.json().catch(() => ({}));
@@ -397,11 +410,15 @@
     frameDetailVersion += 1;
     setStatus("检测重算中...", stats.textContent);
     try {
-      const response = await fetch("/api/recompute", {
+      if (!currentSessionId) throw new Error("会话不存在，请重新解析视频");
+      const response = await fetch(
+        `/api/v1/sessions/${currentSessionId}/detect`,
+        {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fps: metadata.fps_mode, params }),
-      });
+        },
+      );
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || "检测重算失败");
@@ -424,6 +441,7 @@
 
   function refreshFrameDetail(frameId) {
     if (!metadata || !detectionResults[frameId]) return;
+    if (!currentSessionId) return;
     if (detailCache.has(frameId)) {
       applyFrameDetail(frameId, detailCache.get(frameId));
       return;
@@ -431,7 +449,6 @@
     const params = readParams();
     const version = ++frameDetailVersion;
     const query = new URLSearchParams({
-      frame: String(frameId),
       fps: String(metadata.fps_mode),
       detection_frequency: String(params.detection_frequency),
       group_size: String(params.group_size),
@@ -444,7 +461,9 @@
       max_group_amp_cv: String(params.max_group_amp_cv),
       y_max_bit: String(params.y_max_bit),
     });
-    fetch(`/api/detect?${query.toString()}`)
+    fetch(
+      `/api/v1/sessions/${currentSessionId}/frames/${frameId}?${query.toString()}`,
+    )
       .then((response) => (response.ok ? response.json() : null))
       .then((payload) => {
         if (!payload || !payload.ready) return;
@@ -1160,7 +1179,7 @@
 
   async function loadDefaultDetectorOptions() {
     try {
-      const response = await fetch("/api/options?fps=30");
+      const response = await fetch("/api/v1/options?fps=30");
       if (!response.ok) return;
       const payload = await response.json();
       const options = Array.isArray(payload.options) ? payload.options : [];
