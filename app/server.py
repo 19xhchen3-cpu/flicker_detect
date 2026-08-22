@@ -33,7 +33,10 @@ from flicker_detect.detector_config import (
     PARAMETER_TABLE,
     lookup_detector_parameters,
 )
-from flicker_detect.moudle1 import HistoryBuffer
+from flicker_detect.moudle1 import (
+    create_incremental_state,
+    detect_window_incremental,
+)
 from flicker_detect.preprocess import inspect_video, iter_video_frames
 
 APP_DIR = Path(__file__).resolve().parent
@@ -263,22 +266,26 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "No video data available."})
             return
 
-        buffer = HistoryBuffer(params.block_count, params.history)
+        state = create_incremental_state(params)
         results: list[dict | None] = []
         for frame_id, blocks in enumerate(_CURRENT_BLOCKS):
-            buffer.push_frame(blocks, frame_id=frame_id)
-            if buffer.valid_count < params.history:
-                results.append(None)
-                continue
-            result = buffer.detect(params)
+            result = detect_window_incremental(state, blocks, frame_id=frame_id)
             if result is None:
                 results.append(None)
                 continue
+            # 相位锁定窗口：结论对应 [window_start, window_end]。
             window_blocks = _CURRENT_BLOCKS[
-                frame_id - params.history + 1 : frame_id + 1
+                state["window_start"] : state["window_end"] + 1
             ]
             results.append(
-                compact_result(frame_id, result, params, window_blocks)
+                compact_result(
+                    state["window_end"],
+                    result,
+                    params,
+                    window_blocks,
+                    group_starts=[g * state["P"] for g in range(state["G"])],
+                    first_frame_id=state["window_start"],
+                )
             )
 
         layout = window_layout(params.history, params.group_size)
@@ -308,36 +315,33 @@ class ConvertRequestHandler(BaseHTTPRequestHandler):
         if not _CURRENT_BLOCKS or frame_id < 0 or frame_id >= len(_CURRENT_BLOCKS):
             self._send_json(404, {"error": "Frame not available."})
             return
-        if frame_id < params.history - 1:
-            self._send_json(200, {"frame_id": frame_id, "ready": False})
-            return
 
-        buffer = HistoryBuffer(params.block_count, params.history)
+        state = create_incremental_state(params)
         for index in range(frame_id + 1):
-            buffer.push_frame(_CURRENT_BLOCKS[index], frame_id=index)
-        result = buffer.detect(params)
+            detect_window_incremental(state, _CURRENT_BLOCKS[index], frame_id=index)
+        result = state["result"]
         if result is None:
             self._send_json(200, {"frame_id": frame_id, "ready": False})
             return
 
-        window_blocks = _CURRENT_BLOCKS[
-            frame_id - params.history + 1 : frame_id + 1
-        ]
+        window_start = state["window_start"]
+        window_end = state["window_end"]
+        window_blocks = _CURRENT_BLOCKS[window_start : window_end + 1]
         layout = window_layout(params.history, params.group_size)
-        result.update(group_view(window_blocks, params))
+        group_starts = [g * state["P"] for g in range(state["G"])]
+        result.update(group_view(window_blocks, params, starts=group_starts))
         stride = params.group_stride
-        first_frame_id = frame_id - (params.history - 1)
         result["groups"] = [
             {
                 "group_index": group_index,
-                "start_frame": first_frame_id + start,
-                "end_frame": first_frame_id + start + stride,
+                "start_frame": window_start + start,
+                "end_frame": window_start + start + stride,
             }
-            for group_index, start in enumerate(layout["group_starts"])
+            for group_index, start in enumerate(group_starts)
         ]
         result["group_count"] = layout["group_count"]
         result["position_count"] = layout["position_count"]
-        result["frame_id"] = frame_id
+        result["frame_id"] = window_end
         result["min_group_amp"] = params.y_max * params.min_group_amp_ratio
         result["k_value"] = (
             0

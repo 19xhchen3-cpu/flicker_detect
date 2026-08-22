@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-"""频闪检测核心算法纯逻辑版本（单函数版）。
+"""频闪检测核心算法纯逻辑版本（流式增量版）。
 
-该模块按 docs/pure_logic_detector_design.md 实现，目标是可直接翻译成
+该模块按 docs/pure_logic_detector_design.md 的目标实现，可直接翻译成
 嵌入式 C++：核心检测链路不依赖 NumPy/OpenCV，只使用显式循环、一维数组和
 固定 shape。检测语义与 flicker_detect/fedetect_moudle.py 保持对齐。
+
+detect_window_incremental 采用相位锁定 + 跳帧的流式增量实现
+（见 docs/moudle1_optimization.md 4.1）：分组锚定到绝对帧号，每前进
+P 帧新增一组，只在组完成帧重扫判定，其余帧复用上一结论。
 """
 
 from collections.abc import Sequence
@@ -17,393 +21,285 @@ from flicker_detect.detector_config import (
 )
 
 
-def detect_window(
-    history: Sequence[float],
-    slot_order: Sequence[int],
-    H: int,
-    B: int,
-    group_size: int,
-    min_group_amp: float,
-    k_value: int,
-    slope_max: float,
-    min_match_groups: int,
-    same_pattern_ratio: float,
-    max_group_amp_cv: float,
-    block_flags: list[int],
-    mean_abs_diff: list[float] | None = None,
-    diff_cv: list[float] | None = None,
-    sign_flip_ratio: list[float] | None = None,
-    flip_count: list[int] | None = None,
-) -> int:
-    """对一个完整历史窗口执行全部频闪检测阶段。
+def create_incremental_state(params: DetectorParameters) -> dict:
+    """创建增量检测的持久状态（纯 dict，等价 C++ 结构体/成员数组）。
 
-    history 是 block-major 的一维亮度历史，逻辑形状为 [B][H]；
-    slot_order 把环形缓冲槽位映射成逻辑时间顺序。返回检出块数，并写回
-    block_flags 及可选诊断量。
+    上层每帧把该状态传给 detect_window_incremental() 原地更新；阈值
+    换算与 fedetect_moudle 链路保持一致（K-of-N 禁用时振幅门同步关闭）。
     """
-    if group_size < 2:
+    if params.group_size < 2:
         raise ValueError("group_size must be at least 2.")
-    if H < 0:
-        raise ValueError("H must be non-negative.")
-    if B < 0:
-        raise ValueError("B must be non-negative.")
-    if len(history) < B * H:
-        raise ValueError(
-            f"history length {len(history)} is smaller than B*H={B * H}."
-        )
-    if len(slot_order) != H:
-        raise ValueError(
-            f"slot_order length {len(slot_order)} does not match H={H}."
-        )
-    if any(index < 0 or index >= H for index in slot_order):
-        raise ValueError("slot_order values must be valid slot indices.")
-    if len(block_flags) < B:
-        raise ValueError(
-            f"block_flags length {len(block_flags)} is smaller than B={B}."
-        )
+    if params.history <= 0:
+        raise ValueError("history must be positive.")
+    if params.block_count <= 0:
+        raise ValueError("block_count must be positive.")
 
-    for optional in (mean_abs_diff, diff_cv, sign_flip_ratio, flip_count):
-        if optional is not None and len(optional) < B:
-            raise ValueError(
-                f"optional diagnostic length {len(optional)} is smaller than B={B}."
-            )
+    B = params.block_count
+    H = params.history
+    P = params.group_size - 1            # 组内位置数（差分个数）
+    G = (H - 1) // P                     # 同时活跃的组数
 
-    # 输出数组统一初始化，避免上一次调用残留污染本轮结果。
-    for b in range(B):
-        block_flags[b] = 0
-    if mean_abs_diff is not None:
-        for b in range(B):
-            mean_abs_diff[b] = float("nan")
-    if diff_cv is not None:
-        for b in range(B):
-            diff_cv[b] = float("nan")
-    if sign_flip_ratio is not None:
-        for b in range(B):
-            sign_flip_ratio[b] = 0.0
-    if flip_count is not None:
-        for b in range(B):
-            flip_count[b] = 0
-
-    P = group_size - 1
-    G = (H - 1) // P if H > 0 else 0
-    # 与现有 Python 实现一致：K-of-N 禁用时 min_group_amp 同步关闭，
-    # 因此 CV 位置过滤也不再使用振幅门槛。
+    min_group_amp = params.y_max * params.min_group_amp_ratio
+    k_value = (
+        0
+        if params.min_amp_pos_ratio <= 0
+        else ceil(params.position_count * params.min_amp_pos_ratio)
+    )
     if k_value == 0:
         min_group_amp = 0.0
-    if G <= 0:
-        return 0
 
-    # 分组布局：同一函数内只计算一次。
-    used_frames = group_size + (G - 1) * P
-    drop_count = H - used_frames
-    group_starts = [drop_count + g * P for g in range(G)]
+    return {
+        "B": B,
+        "H": H,
+        "P": P,
+        "G": G,
+        # 组特征循环槽容量 G+1，保证"正在滑出"的旧组数据仍在槽内。
+        "group_cap": G + 1,
+        # 环形帧历史（block-major）：绝对帧 f 存放于槽 f % H。
+        "history": [0.0] * (B * H),
+        # 组振幅缓存（(G+1)*B*P）；组模式编码缓存（(G+1)*B，-1 无效）。
+        "group_amp": [0.0] * ((G + 1) * B * P),
+        "group_pattern": [0] * ((G + 1) * B),
+        "min_group_amp": min_group_amp,
+        "k_value": k_value,
+        "slope_max": params.slope_max,
+        "min_match_groups": params.min_match_groups,
+        "same_pattern_ratio": params.same_pattern_ratio,
+        "max_group_amp_cv": params.max_group_amp_cv,
+        "pattern_count": 3**P,
+        "group_count": 0,          # 已完成组数（达到 G 后窗口就绪）
+        "phase_base": None,        # 相位基准：首个 frame_id（组号从此起算）
+        "window_start": None,      # 最近结论的活跃窗口起始绝对帧
+        "window_end": None,        # 最近结论的活跃窗口结束绝对帧
+        "result": None,            # 上一结论缓存（中间帧复用）
+        "next_frame_id": 0,        # frame_id 缺省时的自增序号
+        "latest_frame_id": None,
+    }
 
-    # 预分配固定数组，循环、索引和控制流与后续 C++ 一一对应。
-    pattern_count = 3**P
-    counts = [0] * pattern_count
-    touched = [0] * pattern_count
-    block_amp = [0.0] * (G * P)
-    block_sign = [0] * (G * P)
-    closure = [0.0] * G
-    pattern = [0] * G
-    valid_group_indices = [0] * G
-    dominant_indices = [0] * G
-    sum_amp = [0.0] * P
-    mean_amp = [0.0] * P
-    valid_positions = [0] * P
 
-    flicker_block_num = 0
-    # 遍历所有的块
+def reset_incremental_state(state: dict) -> None:
+    """清空增量状态，供丢帧、VFR 大间隔或场景突变时重建窗口。"""
+    state["history"] = [0.0] * (state["B"] * state["H"])
+    state["group_amp"] = [0.0] * (state["group_cap"] * state["B"] * state["P"])
+    state["group_pattern"] = [0] * (state["group_cap"] * state["B"])
+    state["group_count"] = 0
+    state["phase_base"] = None
+    state["window_start"] = None
+    state["window_end"] = None
+    state["result"] = None
+    state["next_frame_id"] = 0
+    state["latest_frame_id"] = None
+
+
+def detect_window_incremental(
+    state: dict,
+    blocks: Sequence[float],
+    frame_id: int | None = None,
+) -> dict | None:
+    """单函数入口：每帧调用一次，写入该帧并（必要时）刷新结论。
+
+    全部计算都收敛在本函数内，用显式循环和固定数组，便于直接翻译成
+    C++；state 由 create_incremental_state() 创建，本函数原地更新。
+
+    组数耦合（跳帧语义）：分组相位锚定在首个帧号 phase_base 上，第 k 组
+    覆盖绝对帧 [phase_base + k*P, phase_base + k*P + P]。每前进 P 帧
+    （"实际增量"）恰好**新增一组**：新组 k 进窗、最旧组 k-G 出窗，活跃
+    组数恒为 G。因此只在组完成帧（rel = frame_id - phase_base 是 P 的
+    倍数）计算新组特征并重扫判定；中间帧只写数据、复用上一份结论。
+    数据必须逐帧调用本函数；帧号大间隔跳变（丢帧）需先
+    reset_incremental_state()。
+    """
+    B = state["B"]
+    H = state["H"]
+    P = state["P"]
+    G = state["G"]
+    history = state["history"]
+    group_amp = state["group_amp"]
+    group_pattern = state["group_pattern"]
+    group_cap = state["group_cap"]
+    min_group_amp = state["min_group_amp"]
+    k_value = state["k_value"]
+    slope_max = state["slope_max"]
+    min_match_groups = state["min_match_groups"]
+    same_pattern_ratio = state["same_pattern_ratio"]
+    max_group_amp_cv = state["max_group_amp_cv"]
+    pattern_count = state["pattern_count"]
+
+    if len(blocks) != B:
+        raise ValueError(
+            f"blocks length {len(blocks)} does not match "
+            f"block_count {B}."
+        )
+    if frame_id is None:
+        frame_id = state["next_frame_id"]
+    state["next_frame_id"] = frame_id + 1
+    if frame_id < 0:
+        raise ValueError("frame_id must be non-negative.")
+    state["latest_frame_id"] = frame_id
+
+    # 相位基准取首个帧号，组号从 0 起算，避免起始帧号非 P 倍数时错位。
+    if state["phase_base"] is None:
+        state["phase_base"] = frame_id
+    rel = frame_id - state["phase_base"]
+
+    # ---------- 写帧到环形历史（绝对帧 f 存放于槽 f % H） ----------
+    slot = frame_id % H
+    for b, value in enumerate(blocks):
+        history[b * H + slot] = float(value)
+
+    # 第 k 组在帧 f = phase_base + (k+1)*P 时完成；中间帧只写数据，
+    # 复用上一结论（跳帧：每 P 帧才新增一组）。
+    if rel < P or rel % P != 0:
+        return state["result"]
+
+    new_k = (rel - P) // P
+    state["group_count"] += 1
+
+    # ---------- 1. 新组特征（差分/振幅/符号编码/K-of-N/闭合斜率） ----------
+    # 只有新组需要计算，其余 G-1 组复用循环槽中的缓存。
+    start = state["phase_base"] + new_k * P
+    group_slot = (new_k % group_cap) * B
     for b in range(B):
         hbase = b * H
+        code = 0
+        pass_count = 0
+        amp_reached = False
+        for p in range(P):
+            first_slot = (start + p) % H
+            second_slot = (start + p + 1) % H
+            d = history[hbase + second_slot] - history[hbase + first_slot]
+            a = abs(d)
+            group_amp[(group_slot + b) * P + p] = a
+            if d > SIGN_ZERO_EPSILON:
+                digit = 2          # 符号 +1
+            elif d < -SIGN_ZERO_EPSILON:
+                digit = 0          # 符号 -1
+            else:
+                digit = 1          # 符号 0
+            code = code * 3 + digit
+            if k_value > 0 and not amp_reached and a > min_group_amp:
+                pass_count += 1
+                if pass_count >= k_value:
+                    amp_reached = True
+
+        # 闭合斜率门；不合格组记 -1，不参与计数与 CV。
+        amp_group_ok = k_value == 0 or amp_reached or pass_count >= k_value
+        valid = False
+        if amp_group_ok:
+            if slope_max <= 0:
+                valid = True
+            else:
+                closure = (
+                    history[hbase + (start + P) % H]
+                    - history[hbase + start % H]
+                )
+                valid = abs(closure / P) <= slope_max
+        group_pattern[group_slot + b] = code if valid else -1
+
+    # 窗口未就绪（不足 G 组）时不出结论。
+    if state["group_count"] < G:
+        return None
+
+    # 记录该结论对应的活跃窗口（绝对帧区间），供上层组装一致的诊断。
+    # 活跃组为 [new_k-G+1, new_k]，窗口为 [首个组起点, 最后组终点]。
+    state["window_start"] = state["phase_base"] + (new_k - G + 1) * P
+    state["window_end"] = state["phase_base"] + (new_k + 1) * P
+
+    # ---------- 2/3/4. 逐块判定：计数扫描 + 主导模式 + 振幅 CV ----------
+    block_flags = [0] * B
+    mean_abs_diff = [float("nan")] * B
+    diff_cv = [float("nan")] * B
+    sign_flip_ratio = [0.0] * B
+    flip_count = [0] * B
+
+    # 当前活跃组：序号 [new_k-G+1, new_k]。
+    active_slots = [(new_k - G + 1 + g) % group_cap * B for g in range(G)]
+
+    for b in range(B):
+        # 扫描活跃组构建计数（G 很小，按需重扫），平局规则与 fedetect_moudle
+        # 一致：取组扫描顺序中先达到最大计数的编码。
+        counts = [0] * pattern_count
         valid_group_count = 0
-        touched_count = 0
         best_size = 0
         best_code = -1
-
-        # ---------- 1. 分组、特征、K-of-N、闭合斜率 ----------
-        # 遍历所有的组
-        for g in range(G):
-            start = group_starts[g]
-            tail  = group_starts[g] + P
-            pass_count = 0
-            amp_reached = False
-
-            # 遍历所有的位置
-            for p in range(P):
-                # 计算当前帧索引，获取对应的差值并判断对应的符号
-                first_slot = slot_order[start + p]
-                second_slot = slot_order[start + p + 1]
-                d = (
-                    float(history[hbase + second_slot])
-                    - float(history[hbase + first_slot])
-                )
-                a = abs(d)
-                idx = g * P + p
-
-                block_amp[idx] = a
-                if d > SIGN_ZERO_EPSILON:
-                    block_sign[idx] = 1
-                elif d < -SIGN_ZERO_EPSILON:
-                    block_sign[idx] = -1
-                else:
-                    block_sign[idx] = 0
-
-
-                # 判断块有效性，K of N 门，有效块数达到，跳过当前块
-                if k_value > 0 and not amp_reached and a > min_group_amp:
-                    pass_count += 1
-                    if pass_count >= k_value:
-                        amp_reached = True
-
-            # 计算闭合幅度查，然后算周期斜率，合格就通过
-            first_slot = slot_order[start]
-            tail_slot = slot_order[tail]
-
-            closure[g] = float(history[hbase + tail_slot]) - float(history[hbase + first_slot])
-            amp_group_ok = k_value == 0 or amp_reached or pass_count >= k_value
-
-            slope_ok = amp_group_ok
-            if slope_max > 0 and slope_ok:
-                slope = closure[g] / P
-                slope_ok = abs(slope) <= slope_max
-
-            # 将所有位置使用3进制按位置编码，方便符号编码模式比较
-            if slope_ok:
-                code = 0
-                for p in range(P):
-                    # -1 -> 0, 0 -> 1, +1 -> 2
-                    code = code * 3 + (block_sign[g * P + p] + 1)
-                pattern[g] = code
-                valid_group_indices[valid_group_count] = g
-                valid_group_count += 1
-
-        # ---------- 2. 主导符号模式 ----------
-        # 安全剪枝：best_size 不可能超过 valid_group_count，因此当
-        # min_match_groups > 0 且 valid_group_count <= min_match_groups 时，
-        # count_pass 必为假，该块不可能通过判定。只有需要精确
-        # flip_count / sign_flip_ratio 诊断量时才保留计数；否则计数与
-        # CV 一起跳过（CV 在 dominant_ok 为假时本就不会执行）。
-        if (
-            min_match_groups > 0
-            and valid_group_count <= min_match_groups
-            and flip_count is None
-            and sign_flip_ratio is None
-        ):
-            block_flags[b] = 0
-            continue
-
-        # 遍历全部的有效组，找到出现次数最多的那个组
-        for local_index in range(valid_group_count):
-            g = valid_group_indices[local_index]
-            code = pattern[g]
-            if counts[code] == 0:
-                touched[touched_count] = code
-                touched_count += 1
+        for active_slot in active_slots:
+            code = group_pattern[active_slot + b]
+            if code < 0:
+                continue
+            valid_group_count += 1
             counts[code] += 1
             if counts[code] > best_size:
                 best_size = counts[code]
                 best_code = code
 
-        # 从绝对值和比例值检查这个最大特征组是否合格
-        ratio = best_size / valid_group_count if valid_group_count > 0 else 0.0
-        count_pass = min_match_groups == 0 or best_size > min_match_groups
+        ratio = (
+            best_size / valid_group_count if valid_group_count > 0 else 0.0
+        )
+        count_pass = (
+            min_match_groups == 0 or best_size > min_match_groups
+        )
         ratio_pass = (
             same_pattern_ratio == 0 or ratio > same_pattern_ratio
         )
-        dominant_ok = (
-            valid_group_count > 0 and count_pass and ratio_pass
-        )
+        dominant_ok = valid_group_count > 0 and count_pass and ratio_pass
 
-        #记录当前块的一些数据
-        if flip_count is not None:
-            flip_count[b] = best_size
-        if sign_flip_ratio is not None:
-            sign_flip_ratio[b] = ratio
+        flip_count[b] = best_size
+        sign_flip_ratio[b] = ratio
 
-        # 只保留主导模式成员，用于跨周期振幅 CV。
-        dominant_count = 0
-        if dominant_ok:
-            for local_index in range(valid_group_count):
-                g = valid_group_indices[local_index]
-                if pattern[g] == best_code:
-                    dominant_indices[dominant_count] = g
-                    dominant_count += 1
-
-        # ---------- 3. 跨周期振幅 CV ----------
+        # 跨周期振幅 CV（只对主导组，用缓存的振幅按需重算）。
         block_ok = False
-        if dominant_count > 0:
-            d_count = dominant_count
-            # 第一轮，先计算平均值
-            for p in range(P):
-                sum_amp[p] = 0.0
-            for local_index in range(dominant_count):
-                g = dominant_indices[local_index]
-                for p in range(P):
-                    sum_amp[p] += block_amp[g * P + p]
-            for p in range(P):
-                mean_amp[p] = sum_amp[p] / d_count
+        if dominant_ok:
+            # 第一趟：主导组各位置振幅均值。
+            sum_amp = [0.0] * P
+            dominant_count = 0
+            for active_slot in active_slots:
+                if group_pattern[active_slot + b] == best_code:
+                    dominant_count += 1
+                    for p in range(P):
+                        sum_amp[p] += group_amp[(active_slot + b) * P + p]
+            if dominant_count > 0:
+                mean_amp = [s / dominant_count for s in sum_amp]
+                valid_positions = [
+                    p for p in range(P) if mean_amp[p] > min_group_amp
+                ]
+                if valid_positions:
+                    # 第二趟：平方偏差累计，pos_cv² = var / mean²。
+                    max_pos_cv_sq = 0.0
+                    mean_sum = 0.0
+                    for p in valid_positions:
+                        variance_sum = 0.0
+                        for active_slot in active_slots:
+                            if group_pattern[active_slot + b] == best_code:
+                                delta = (
+                                    group_amp[(active_slot + b) * P + p]
+                                    - mean_amp[p]
+                                )
+                                variance_sum += delta * delta
+                        variance = variance_sum / dominant_count
+                        mean_sum += mean_amp[p]
+                        pos_cv_sq = variance / (mean_amp[p] * mean_amp[p])
+                        max_pos_cv_sq = max(max_pos_cv_sq, pos_cv_sq)
 
-            valid_position_count = 0
-            # 第二轮，计算相对均值的差的平方和
-            for p in range(P):
-                if mean_amp[p] > min_group_amp:
-                    valid_positions[valid_position_count] = p
-                    valid_position_count += 1
-
-            if valid_position_count > 0:
-                max_pos_cv_sq = 0.0
-                mean_sum = 0.0
-
-                for vi in range(valid_position_count):
-                    p = valid_positions[vi]
-                    mean = mean_amp[p]
-                    variance_sum = 0.0
-                    for local_index in range(dominant_count):
-                        g = dominant_indices[local_index]
-                        delta = block_amp[g * P + p] - mean
-                        variance_sum += delta * delta
-
-                    variance = variance_sum / d_count
-                    mean_sum += mean
-                    # 先以平方形式累计最大值：pos_cv² = variance / mean²。
-                    # sqrt 单调递增，max(sqrt(x)) == sqrt(max(x))，
-                    # 因此开平方推迟到最终比较时做一次，省掉每个位置一次 sqrt。
-                    pos_cv_sq = variance / (mean * mean)
-                    if pos_cv_sq > max_pos_cv_sq:
-                        max_pos_cv_sq = pos_cv_sq
-
-                if mean_abs_diff is not None:
-                    mean_abs_diff[b] = mean_sum / valid_position_count
-                if diff_cv is not None:
+                    mean_abs_diff[b] = mean_sum / len(valid_positions)
                     diff_cv[b] = sqrt(max_pos_cv_sq)
-
-                if max_group_amp_cv == 0:
-                    block_ok = dominant_ok
-                else:
-                    block_ok = (
-                        dominant_ok
-                        and sqrt(max_pos_cv_sq) <= max_group_amp_cv
-                    )
-            elif max_group_amp_cv == 0:
-                block_ok = dominant_ok
-
-        # ---------- 4. 最终判定 ----------
+                    if (
+                        max_group_amp_cv == 0
+                        or sqrt(max_pos_cv_sq) <= max_group_amp_cv
+                    ):
+                        block_ok = True
+                elif max_group_amp_cv == 0:
+                    block_ok = True
         block_flags[b] = 1 if block_ok else 0
-        flicker_block_num += block_flags[b]
 
-        for i in range(touched_count):
-            counts[touched[i]] = 0
-
-    return flicker_block_num
-
-
-class HistoryBuffer:
-    """把逐帧 block 亮度写入 block-major 环形历史，供 detect_window 使用。"""
-
-    def __init__(self, B: int, H: int) -> None:
-        if B <= 0:
-            raise ValueError("B must be positive.")
-        if H <= 0:
-            raise ValueError("H must be positive.")
-        self.block_count = B
-        self.capacity = H
-        self.history = [0] * (B * H)
-        self.slot_order = list(range(H))
-        self.write_index = 0
-        self.valid_count = 0
-        self.latest_frame_id: int | None = None
-
-    def reset(self) -> None:
-        """清空历史，供丢帧、VFR 大间隔或场景突变时重建窗口。"""
-        self.history = [0] * (self.block_count * self.capacity)
-        self.slot_order = list(range(self.capacity))
-        self.write_index = 0
-        self.valid_count = 0
-        self.latest_frame_id = None
-
-    def push_frame(
-        self,
-        blocks: Sequence[float],
-        frame_id: int | None = None,
-    ) -> None:
-        """写入一帧块亮度，满窗后自动更新逻辑帧顺序。"""
-        if len(blocks) != self.block_count:
-            raise ValueError(
-                f"blocks length {len(blocks)} does not match "
-                f"block_count {self.block_count}."
-            )
-
-        for b, value in enumerate(blocks):
-            self.history[b * self.capacity + self.write_index] = value
-
-        self.write_index = (self.write_index + 1) % self.capacity
-        if self.valid_count < self.capacity:
-            self.valid_count += 1
-
-        if self.valid_count == self.capacity:
-            oldest = self.write_index
-            for h in range(self.capacity):
-                self.slot_order[h] = (oldest + h) % self.capacity
-
-        if frame_id is not None:
-            self.latest_frame_id = frame_id
-
-    def detect(
-        self,
-        params: DetectorParameters,
-        mean_abs_diff: list[float] | None = None,
-        diff_cv: list[float] | None = None,
-        sign_flip_ratio: list[float] | None = None,
-        flip_count: list[int] | None = None,
-    ) -> dict | None:
-        """历史满窗时执行检测，未满窗返回 None。"""
-        if self.valid_count < self.capacity:
-            return None
-
-        B = self.block_count
-        if mean_abs_diff is None:
-            mean_abs_diff = [float("nan")] * B
-        if diff_cv is None:
-            diff_cv = [float("nan")] * B
-        if sign_flip_ratio is None:
-            sign_flip_ratio = [0.0] * B
-        if flip_count is None:
-            flip_count = [0] * B
-
-        block_flags = [0] * B
-        min_group_amp = params.y_max * params.min_group_amp_ratio
-        if params.min_amp_pos_ratio <= 0:
-            k_value = 0
-        else:
-            k_value = ceil(params.position_count * params.min_amp_pos_ratio)
-
-        flicker_block_num = detect_window(
-            self.history,
-            self.slot_order,
-            self.capacity,
-            B,
-            params.group_size,
-            min_group_amp,
-            k_value,
-            params.slope_max,
-            params.min_match_groups,
-            params.same_pattern_ratio,
-            params.max_group_amp_cv,
-            block_flags,
-            mean_abs_diff=mean_abs_diff,
-            diff_cv=diff_cv,
-            sign_flip_ratio=sign_flip_ratio,
-            flip_count=flip_count,
-        )
-        return {
-            "flicker_block_num": flicker_block_num,
-            "block_flags": block_flags,
-            "mean_abs_diff": mean_abs_diff,
-            "diff_cv": diff_cv,
-            "sign_flip_ratio": sign_flip_ratio,
-            "flip_count": flip_count,
-        }
+    state["result"] = {
+        "flicker_block_num": sum(block_flags),
+        "block_flags": block_flags,
+        "mean_abs_diff": mean_abs_diff,
+        "diff_cv": diff_cv,
+        "sign_flip_ratio": sign_flip_ratio,
+        "flip_count": flip_count,
+    }
+    return state["result"]
 
 
 def main() -> None:
@@ -412,13 +308,15 @@ def main() -> None:
     if params.group_size <= 0:
         raise ValueError("configured parameter cell has group_size=0.")
 
-    buffer = HistoryBuffer(params.block_count, params.history)
+    state = create_incremental_state(params)
     levels = [6000, 9000, 5000]
     for frame_id in range(params.history):
         level = levels[frame_id % params.position_count]
-        buffer.push_frame([level] * params.block_count, frame_id=frame_id)
+        detect_window_incremental(
+            state, [level] * params.block_count, frame_id=frame_id
+        )
 
-    result = buffer.detect(params)
+    result = state["result"]
     if result is None:
         raise RuntimeError("history should be ready after filling the buffer.")
     print(

@@ -109,7 +109,9 @@ class ApiV1Test(unittest.TestCase):
         last = payload["results"][-1]
         self.assertEqual(last["flicker_block_num"], 192)
         self.assertEqual(last["group_count"], 9)
-        self.assertEqual(last["groups"][0]["start_frame"], 2)
+        # 相位锁定布局：窗口 [0,27]，组起点 0,3,...,24（无 drop）。
+        self.assertEqual(last["groups"][0]["start_frame"], 0)
+        self.assertEqual(last["groups"][-1]["start_frame"], 24)
 
     def test_frame_detail(self) -> None:
         """单帧详情接口应返回逐块逐组诊断矩阵。"""
@@ -125,7 +127,7 @@ class ApiV1Test(unittest.TestCase):
         self.assertEqual(len(result["groups"]), 9)
         self.assertEqual(len(result["group_dominant"]), 192)
         self.assertTrue(all(result["group_dominant"][b][0] for b in range(192)))
-        self.assertEqual(result["group_sign"][0][0], "++-")
+        self.assertEqual(result["group_sign"][0][0], "+-+")
 
     def test_unknown_session(self) -> None:
         """不存在的会话应返回 not_found。"""

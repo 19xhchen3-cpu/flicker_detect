@@ -26,7 +26,10 @@ from flicker_detect.fedetect_moudle import (
     finalize_block_detection,
     group_frames,
 )
-from flicker_detect.moudle1 import HistoryBuffer
+from flicker_detect.moudle1 import (
+    create_incremental_state,
+    detect_window_incremental,
+)
 
 # 30fps 下参数表有效（group_size=4）的驱动频率。
 VALID_30FPS_DRIVE_HZ = (50, 100, 125, 200, 500)
@@ -87,11 +90,13 @@ def run_fedetect(history: np.ndarray, params) -> dict:
 
 
 def run_pure(history: np.ndarray, params) -> dict:
-    """用 moudle1 纯逻辑版跑同一段历史。"""
-    buffer = HistoryBuffer(params.block_count, params.history)
+    """用 moudle1 增量纯逻辑版跑同一段历史。"""
+    state = create_incremental_state(params)
+    result = None
     for frame_id in range(history.shape[0]):
-        buffer.push_frame(history[frame_id].tolist(), frame_id=frame_id)
-    result = buffer.detect(params)
+        result = detect_window_incremental(
+            state, history[frame_id].tolist(), frame_id=frame_id
+        )
     assert result is not None, "history should be ready after filling the buffer"
     return result
 

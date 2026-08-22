@@ -8,7 +8,7 @@ from __future__ import annotations
 3. 参数解析：查 detector_config 参数表，校验前端覆盖值；
 4. 编排与序列化：调 moudle1 检测，NaN 转 null 后返回 JSON。
 
-moudle1.py / detector_config.py / preprocess.py 均不修改。
+moudle1 只暴露纯函数（流式增量检测），API 层不包含检测算法本身。
 """
 
 import itertools
@@ -31,7 +31,10 @@ from flicker_detect.detector_config import (
     group_size_for,
     lookup_detector_parameters,
 )
-from flicker_detect.moudle1 import HistoryBuffer
+from flicker_detect.moudle1 import (
+    create_incremental_state,
+    detect_window_incremental,
+)
 from flicker_detect.preprocess import inspect_video, iter_video_frames
 
 ENGINE = FlickerEngine()
@@ -203,7 +206,7 @@ def detector_params(fps: int) -> dict[str, Any]:
 
 
 def window_layout(H: int, group_size: int) -> dict:
-    """计算检测窗口的分组布局，语义与 moudle1 的 detect_window 一致。"""
+    """计算检测窗口的分组布局（历史全量语义，供元信息与旧布局复用）。"""
     P = group_size - 1
     G = (H - 1) // P if H > 0 and P > 0 else 0
     used_frames = group_size + (G - 1) * P if G > 0 else 0
@@ -219,14 +222,19 @@ def window_layout(H: int, group_size: int) -> dict:
     }
 
 
-def group_view(blocks: list[list[float]], params: DetectorParameters) -> dict:
+def group_view(
+    blocks: list[list[float]],
+    params: DetectorParameters,
+    starts: list[int] | None = None,
+) -> dict:
     """生成逐块逐组诊断，供前端悬停与曲线着色。"""
     H = len(blocks)
     layout = window_layout(H, params.group_size)
     P = layout["position_count"]
     G = layout["group_count"]
     B = params.block_count
-    starts = layout["group_starts"]
+    if starts is None:
+        starts = layout["group_starts"]
     min_group_amp = params.y_max * params.min_group_amp_ratio
     amp_gate_enabled = params.min_amp_pos_ratio > 0
     k_value = math.ceil(P * params.min_amp_pos_ratio) if amp_gate_enabled else 0
@@ -324,18 +332,23 @@ def compact_result(
     result: dict,
     params: DetectorParameters,
     window_blocks: list[list[float]],
+    group_starts: list[int] | None = None,
+    first_frame_id: int | None = None,
 ) -> dict:
     """把一次满窗检测结果压缩成前端需要的紧凑结构。"""
     layout = window_layout(params.history, params.group_size)
     stride = params.group_stride
-    first_frame_id = frame_id - (params.history - 1)
+    if first_frame_id is None:
+        first_frame_id = frame_id - (params.history - 1)
+    if group_starts is None:
+        group_starts = layout["group_starts"]
     groups = [
         {
             "group_index": group_index,
             "start_frame": first_frame_id + start,
             "end_frame": first_frame_id + start + stride,
         }
-        for group_index, start in enumerate(layout["group_starts"])
+        for group_index, start in enumerate(group_starts)
     ]
     block_count = params.block_count
     avg_ratio_diff = [float("nan")] * block_count
@@ -590,19 +603,27 @@ def _detect_all(session: dict[str, Any], body: dict[str, Any]) -> dict:
         params_raw["fps"] = body["fps"]
     params = resolve_params(params_raw, meta)
 
-    buffer = HistoryBuffer(params.block_count, params.history)
+    state = create_incremental_state(params)
     results: list[dict | None] = []
     for frame_id, frame_blocks in enumerate(blocks):
-        buffer.push_frame(frame_blocks, frame_id=frame_id)
-        if buffer.valid_count < params.history:
-            results.append(None)
-            continue
-        result = buffer.detect(params)
+        result = detect_window_incremental(state, frame_blocks, frame_id=frame_id)
         if result is None:
             results.append(None)
             continue
-        window_blocks = blocks[frame_id - params.history + 1 : frame_id + 1]
-        results.append(compact_result(frame_id, result, params, window_blocks))
+        # 相位锁定窗口：结论对应 [window_start, window_end]，组起点为
+        # 窗口起点 + g*P（无 drop，与 detect_window_incremental 一致）。
+        window_blocks = blocks[state["window_start"] : state["window_end"] + 1]
+        group_starts = [g * state["P"] for g in range(state["G"])]
+        results.append(
+            compact_result(
+                state["window_end"],
+                result,
+                params,
+                window_blocks,
+                group_starts=group_starts,
+                first_frame_id=state["window_start"],
+            )
+        )
 
     layout = window_layout(params.history, params.group_size)
     return {
@@ -629,32 +650,32 @@ def _frame_detail(
     params = resolve_params(raw, meta)
     if frame_id < 0 or frame_id >= len(blocks):
         raise V1Error(404, "not_found", "Frame not available.")
-    if frame_id < params.history - 1:
-        return {"frame_id": frame_id, "ready": False}
 
-    buffer = HistoryBuffer(params.block_count, params.history)
+    state = create_incremental_state(params)
     for index in range(frame_id + 1):
-        buffer.push_frame(blocks[index], frame_id=index)
-    result = buffer.detect(params)
+        detect_window_incremental(state, blocks[index], frame_id=index)
+    result = state["result"]
     if result is None:
         return {"frame_id": frame_id, "ready": False}
 
-    window_blocks = blocks[frame_id - params.history + 1 : frame_id + 1]
+    window_start = state["window_start"]
+    window_end = state["window_end"]
+    window_blocks = blocks[window_start : window_end + 1]
     layout = window_layout(params.history, params.group_size)
-    result.update(group_view(window_blocks, params))
+    group_starts = [g * state["P"] for g in range(state["G"])]
+    result.update(group_view(window_blocks, params, starts=group_starts))
     stride = params.group_stride
-    first_frame_id = frame_id - (params.history - 1)
     result["groups"] = [
         {
             "group_index": group_index,
-            "start_frame": first_frame_id + start,
-            "end_frame": first_frame_id + start + stride,
+            "start_frame": window_start + start,
+            "end_frame": window_start + start + stride,
         }
-        for group_index, start in enumerate(layout["group_starts"])
+        for group_index, start in enumerate(group_starts)
     ]
     result["group_count"] = layout["group_count"]
     result["position_count"] = layout["position_count"]
-    result["frame_id"] = frame_id
+    result["frame_id"] = window_end
     result["min_group_amp"] = params.y_max * params.min_group_amp_ratio
     result["k_value"] = (
         0

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""纯逻辑检测模块的单元测试，并与现有检测链路做结果对照。"""
+"""纯逻辑增量检测模块（moudle1.detect_window_incremental）的单元测试。"""
 
 import math
 import unittest
@@ -14,7 +14,11 @@ from flicker_detect.fedetect_moudle import (
     finalize_block_detection,
     group_frames,
 )
-from flicker_detect.moudle1 import HistoryBuffer, detect_window
+from flicker_detect.moudle1 import (
+    create_incremental_state,
+    detect_window_incremental,
+    reset_incremental_state,
+)
 
 
 def make_params(*, block_count: int = 1, min_frames: int = 10, **overrides):
@@ -51,58 +55,27 @@ def run_existing(history_frames, params: DetectorParameters) -> dict:
     }
 
 
-def run_pure(history_frames, params: DetectorParameters) -> dict:
-    """把 [frame, block] 历史转成 block-major 后执行纯逻辑检测。"""
-    H = params.history
-    B = params.block_count
-    if len(history_frames) != H:
-        raise ValueError("test helper expects a full history window.")
+def run_incremental(
+    history_frames,
+    params: DetectorParameters,
+    base: int = 0,
+) -> dict | None:
+    """把 [frame, block] 历史逐帧喂给增量检测，返回就绪后的结论。
 
-    history = [0.0] * (B * H)
-    for h, frame in enumerate(history_frames):
-        for b, value in enumerate(frame):
-            history[b * H + h] = float(value)
-
-    block_flags = [0] * B
-    mean_abs_diff = [float("nan")] * B
-    diff_cv = [float("nan")] * B
-    sign_flip_ratio = [0.0] * B
-    flip_count = [0] * B
-    k_value = (
-        0
-        if params.min_amp_pos_ratio <= 0
-        else math.ceil(params.position_count * params.min_amp_pos_ratio)
-    )
-    flicker_block_num = detect_window(
-        history,
-        list(range(H)),
-        H,
-        B,
-        params.group_size,
-        params.y_max * params.min_group_amp_ratio,
-        k_value,
-        params.slope_max,
-        params.min_match_groups,
-        params.same_pattern_ratio,
-        params.max_group_amp_cv,
-        block_flags,
-        mean_abs_diff=mean_abs_diff,
-        diff_cv=diff_cv,
-        sign_flip_ratio=sign_flip_ratio,
-        flip_count=flip_count,
-    )
-    return {
-        "flicker_block_num": flicker_block_num,
-        "block_flags": block_flags,
-        "mean_abs_diff": mean_abs_diff,
-        "diff_cv": diff_cv,
-        "sign_flip_ratio": sign_flip_ratio,
-        "flip_count": flip_count,
-    }
+    H=10（drop=0）时结论窗口与输入完全一致；H=30 时结论窗口为相位
+    对齐区间，调用方需按注释传入对应的绝对帧片段。
+    """
+    state = create_incremental_state(params)
+    result = None
+    for i, frame in enumerate(history_frames):
+        result = detect_window_incremental(
+            state, [float(value) for value in frame], frame_id=base + i
+        )
+    return result
 
 
 def assert_results_equal(test: unittest.TestCase, actual: dict, expected: dict) -> None:
-    """比较纯逻辑与现有实现的关键输出，NaN 按相等处理。"""
+    """比较增量实现与现有实现的关键输出，NaN 按相等处理。"""
     test.assertEqual(actual["flicker_block_num"], expected["flicker_block_num"])
     np.testing.assert_array_equal(actual["block_flags"], expected["block_flags"])
     np.testing.assert_allclose(
@@ -122,25 +95,26 @@ def assert_results_equal(test: unittest.TestCase, actual: dict, expected: dict) 
     np.testing.assert_array_equal(actual["flip_count"], expected["flip_count"])
 
 
-class PureLogicDetectorTest(unittest.TestCase):
-    def test_detect_window_marks_periodic_block_only(self) -> None:
+class IncrementalDetectorTest(unittest.TestCase):
+    """detect_window_incremental 的行为测试与 fedetect 链路对照。"""
+
+    def test_marks_periodic_block_only(self) -> None:
+        """H=10 窗口（drop=0）下与现有链路一致，只标记周期块。"""
         params = make_params(block_count=2, slope_max=1.0)
         H = params.history
-        periodic = [20.0, 40.0, 0.0, 20.0, 40.0, 0.0, 20.0, 40.0, 0.0, 20.0]
-        monotonic = [float(value) for value in range(10)]
-        history = [
-            [periodic[h], monotonic[h]]
-            for h in range(H)
-        ]
+        periodic = [20.0, 40.0, 0.0] * (H // 3) + [20.0]
+        monotonic = [float(value) for value in range(H)]
+        history = [[periodic[h], monotonic[h]] for h in range(H)]
 
-        pure = run_pure(history, params)
+        pure = run_incremental(history, params)
         existing = run_existing(history, params)
-
+        assert pure is not None
         assert_results_equal(self, pure, existing)
         self.assertEqual(pure["block_flags"], [1, 0])
         self.assertEqual(pure["flicker_block_num"], 1)
 
-    def test_detect_window_matches_existing_pipeline_randomly(self) -> None:
+    def test_matches_existing_pipeline_randomly(self) -> None:
+        """H=10 随机数据与现有链路一致（含全门禁关闭配置）。"""
         rng = np.random.RandomState(20260812)
         configs = [
             make_params(block_count=3),
@@ -153,164 +127,91 @@ class PureLogicDetectorTest(unittest.TestCase):
                 max_group_amp_cv=0.0,
             ),
         ]
-
         for params in configs:
             for _ in range(5):
                 history = rng.normal(1000.0, 200.0, (params.history, 3))
-                history[:, 0] += np.tile([20.0, 40.0, 0.0], params.history // 3 + 1)[
-                    : params.history
-                ]
+                history[:, 0] += np.tile(
+                    [20.0, 40.0, 0.0], params.history // 3 + 1
+                )[: params.history]
 
-                pure = run_pure(history, params)
+                pure = run_incremental(history.tolist(), params)
                 existing = run_existing(history, params)
+                assert pure is not None
                 assert_results_equal(self, pure, existing)
 
     def test_safe_pruning_skips_guaranteed_failures_only(self) -> None:
-        # H=30、group_size=4 时最多可形成 G=9 个有效组。
-        # 块 0 只构造 2 个有效组（等于 min_match_groups），数量门槛必不通过，
-        # 无诊断量时整块跳过计数与 CV；块 1 有 9 个同模式有效组，走完整路径。
+        """H=30：相位锁定窗口 [3,30] 下剪枝行为与 fedetect 一致。"""
         params = make_params(block_count=2, min_frames=30)
         H = params.history
 
-        # 块 0：帧 2..8 震荡（组 0/1 有效），帧 9..29 恒定（组 2..8 被 K-of-N 拒绝）。
-        block0 = [1000.0] * H
+        # 块 0：帧 3..9 震荡（组 0/1 有效且同模式），其余恒定（无效）。
+        block0 = [1000.0] * (H + 1)
         for h, value in zip(
-            range(2, 9),
+            range(3, 10),
             [1000.0, 1020.0, 980.0, 1000.0, 1020.0, 980.0, 1000.0],
         ):
             block0[h] = value
         # 块 1：完整周期信号，9 个有效组全部同模式。
-        block1 = [20.0, 40.0, 0.0] * (H // 3) + [20.0]
-        history = [[block0[h], block1[h]] for h in range(H)]
+        block1 = ([20.0, 40.0, 0.0] * ((H + 1) // 3 + 1))[: H + 1]
+        history = [[block0[h], block1[h]] for h in range(H + 1)]
 
-        # 完整路径（带诊断）：计数必须照常执行，flip_count 反映真实 best_size。
-        pure_full = run_pure(history, params)
-        existing_full = run_existing(history, params)
-        assert_results_equal(self, pure_full, existing_full)
-        self.assertEqual(pure_full["block_flags"], [0, 1])
-        self.assertEqual(pure_full["flicker_block_num"], 1)
-        self.assertEqual(pure_full["flip_count"], [2, 9])
-        self.assertEqual(pure_full["sign_flip_ratio"], [1.0, 1.0])
+        # 增量在帧 30 出结论，窗口 [3,30]；fedetect 输入取绝对帧 1..30，
+        # 使其相对起点 2,5,...,26 映射到绝对 3,6,...,27。
+        pure = run_incremental(history, params)
+        existing = run_existing(history[1:31], params)
+        assert pure is not None
+        assert_results_equal(self, pure, existing)
+        self.assertEqual(pure["block_flags"], [0, 1])
+        self.assertEqual(pure["flicker_block_num"], 1)
+        self.assertEqual(pure["flip_count"], [2, 9])
+        self.assertEqual(pure["sign_flip_ratio"], [1.0, 1.0])
 
-        # 剪枝路径（无诊断）：跳过计数与 CV，判定结果与完整路径一致；
-        # 块 0 被剪枝后不残留计数状态，块 1 仍能正常检出。
-        B = params.block_count
-        history_flat = [0.0] * (B * H)
-        for h, frame in enumerate(history):
-            for b, value in enumerate(frame):
-                history_flat[b * H + h] = float(value)
-
-        block_flags = [0] * B
-        flicker_block_num = detect_window(
-            history_flat,
-            list(range(H)),
-            H,
-            B,
-            params.group_size,
-            params.y_max * params.min_group_amp_ratio,
-            2,  # k_value = ceil(3 * 0.5)
-            params.slope_max,
-            params.min_match_groups,
-            params.same_pattern_ratio,
-            params.max_group_amp_cv,
-            block_flags,
-        )
-        self.assertEqual(block_flags, [0, 1])
-        self.assertEqual(flicker_block_num, 1)
-
-    def test_cv_sqrt_deferred_to_final_compare_matches_existing_pipeline(self) -> None:
-        # 块 0：振幅稳定，CV≈0，通过；块 1：符号模式一致但振幅逐组漂移，
-        # max_pos_cv≈0.49 > 0.4，CV 门必须拒绝。平方累计 + 末尾开平方
-        # 的判定与诊断必须和现有链路一致。
+    def test_cv_sqrt_matches_existing_pipeline(self) -> None:
+        """H=30：CV 门在相位锁定窗口 [3,30] 下与 fedetect 一致。"""
         params = make_params(block_count=2, min_frames=30)
         H = params.history
 
-        block0 = [20.0, 40.0, 0.0] * (H // 3)
-        block1 = [1000.0] * H
+        block0 = ([20.0, 40.0, 0.0] * ((H + 1) // 3 + 1))[: H + 1]
+        block1 = [1000.0] * (H + 1)
         for g in range(9):
-            s = 2 + 3 * g
+            s = 3 + 3 * g
             up = 50.0 + 40.0 * g
             down = 100.0 + 80.0 * g
             block1[s] = 1000.0
             block1[s + 1] = 1000.0 + up
             block1[s + 2] = 1000.0 + up - down
             block1[s + 3] = 1000.0
-        history = [[block0[h], block1[h]] for h in range(H)]
+        history = [[block0[h], block1[h]] for h in range(H + 1)]
 
-        pure = run_pure(history, params)
-        existing = run_existing(history, params)
+        pure = run_incremental(history, params)
+        existing = run_existing(history[1:31], params)
+        assert pure is not None
         assert_results_equal(self, pure, existing)
         self.assertEqual(pure["block_flags"], [1, 0])
         self.assertGreater(pure["diff_cv"][1], params.max_group_amp_cv)
         self.assertFalse(math.isnan(pure["diff_cv"][0]))
 
-    def test_history_buffer_ring_matches_sliding_windows(self) -> None:
-        params = make_params(block_count=2)
-        rng = np.random.RandomState(7)
-        total_frames = params.history + 5
-        frames = rng.normal(1000.0, 100.0, (total_frames, 2))
-        frames[:, 0] += np.tile([30.0, 0.0, 0.0, 30.0], total_frames // 4 + 1)[
-            :total_frames
-        ]
-
-        buffer = HistoryBuffer(params.block_count, params.history)
-        for frame_id, frame in enumerate(frames):
-            buffer.push_frame(frame, frame_id=frame_id)
-            if frame_id < params.history - 1:
-                self.assertIsNone(buffer.detect(params))
-                continue
-
-            result = buffer.detect(params)
-            self.assertIsNotNone(result)
-            window = frames[frame_id - params.history + 1 : frame_id + 1]
-            pure = run_pure(window, params)
-            existing = run_existing(window, params)
-            assert_results_equal(self, result, pure)
-            assert_results_equal(self, result, existing)
-
-    def test_detect_window_returns_zero_when_no_full_group(self) -> None:
-        H = 3
-        B = 2
-        history = [0.0] * (B * H)
-        block_flags = [0] * B
-        mean_abs_diff = [float("nan")] * B
-        diff_cv = [float("nan")] * B
-        sign_flip_ratio = [0.0] * B
-        flip_count = [0] * B
-
-        count = detect_window(
-            history,
-            list(range(H)),
-            H,
-            B,
-            4,
-            16.0,
-            2,
-            10.0,
-            2,
-            0.8,
-            0.4,
-            block_flags,
-            mean_abs_diff=mean_abs_diff,
-            diff_cv=diff_cv,
-            sign_flip_ratio=sign_flip_ratio,
-            flip_count=flip_count,
+    def test_returns_none_before_ready(self) -> None:
+        """H=30：窗口凑齐 G 组（帧 27）前返回 None。"""
+        params = make_params(block_count=2, min_frames=30)
+        frame = [6000.0, 9000.0, 5000.0]
+        state = create_incremental_state(params)
+        for i in range(27):
+            self.assertIsNone(
+                detect_window_incremental(state, [frame[i % 3]] * 2, frame_id=i)
+            )
+        self.assertIsNotNone(
+            detect_window_incremental(state, [frame[27 % 3]] * 2, frame_id=27)
         )
 
-        self.assertEqual(count, 0)
-        self.assertEqual(block_flags, [0, 0])
-        self.assertTrue(all(math.isnan(value) for value in mean_abs_diff))
-        self.assertTrue(all(math.isnan(value) for value in diff_cv))
-        self.assertEqual(sign_flip_ratio, [0.0, 0.0])
-        self.assertEqual(flip_count, [0, 0])
-
-    def test_detect_window_initializes_diagnostics_for_non_candidate(self) -> None:
+    def test_initializes_diagnostics_for_non_candidate(self) -> None:
+        """无有效组时诊断量初始化正确（mean/cv 为 NaN，ratio/flip 为 0）。"""
         params = make_params(slope_max=1.0)
         history = [[float(value)] for value in range(10)]
 
-        pure = run_pure(history, params)
+        pure = run_incremental(history, params)
         existing = run_existing(history, params)
-
+        assert pure is not None
         assert_results_equal(self, pure, existing)
         self.assertEqual(pure["block_flags"], [0])
         self.assertTrue(math.isnan(pure["mean_abs_diff"][0]))
@@ -318,85 +219,68 @@ class PureLogicDetectorTest(unittest.TestCase):
         self.assertEqual(pure["sign_flip_ratio"], [0.0])
         self.assertEqual(pure["flip_count"], [0])
 
-    def test_detect_window_validates_inputs(self) -> None:
-        history = [0.0] * 6
-        flags = [0, 0]
+    def test_phase_base_non_zero_alignment(self) -> None:
+        """起始帧号非 P 倍数：相位锚定到首帧，结论与 fedetect 对齐窗口一致。"""
+        params = make_params(block_count=3)
+        rng = np.random.RandomState(42)
+        frames = rng.normal(8192.0, 200.0, (12, 3))
+        frames[:, 0] += np.tile([30.0, 0.0, 0.0], 4)[:12]
 
-        with self.assertRaises(ValueError):
-            detect_window(
-                history,
-                [0, 1, 2],
-                3,
-                2,
-                1,
-                16.0,
-                2,
-                10.0,
-                2,
-                0.8,
-                0.4,
-                flags,
-            )
-        with self.assertRaises(ValueError):
-            detect_window(
-                [0.0] * 5,
-                [0, 1, 2],
-                3,
-                2,
-                4,
-                16.0,
-                2,
-                10.0,
-                2,
-                0.8,
-                0.4,
-                flags,
-            )
-        with self.assertRaises(ValueError):
-            detect_window(
-                history,
-                [0, 1],
-                3,
-                2,
-                4,
-                16.0,
-                2,
-                10.0,
-                2,
-                0.8,
-                0.4,
-                flags,
-            )
-        with self.assertRaises(ValueError):
-            detect_window(
-                history,
-                [0, 1, 3],
-                3,
-                2,
-                4,
-                16.0,
-                2,
-                10.0,
-                2,
-                0.8,
-                0.4,
-                flags,
-            )
+        pure = run_incremental(frames.tolist(), params, base=2)
+        # 结论窗口为绝对帧 [2,11]（rel=9）；base=2 时帧号 = 行号 + 2，
+        # 故 fedetect 输入取 rows 0..9（对应帧号 2..11）。
+        existing = run_existing(frames[0:10], params)
+        assert pure is not None
+        assert_results_equal(self, pure, existing)
 
-    def test_history_buffer_validates_blocks_and_reset(self) -> None:
+    def test_jump_semantics_and_group_count(self) -> None:
+        """每跳 P 帧恰好新增一组；中间帧复用同一结论对象。"""
+        params = make_params(block_count=2, min_frames=30)
+        frame = [6000.0, 9000.0, 5000.0]
+        state = create_incremental_state(params)
+        for i in range(30):
+            detect_window_incremental(state, [frame[i % 3]] * 2, frame_id=i)
+        self.assertEqual(state["group_count"], 9)  # 0..29 完成 9 组
+        self.assertIsNotNone(state["result"])
+        cached = state["result"]
+        for i in (31, 32):
+            detect_window_incremental(state, [frame[i % 3]] * 2, frame_id=i)
+        self.assertEqual(state["group_count"], 9)  # 中间帧不新增组
+        self.assertIs(state["result"], cached)     # 中间帧复用结论对象
+        detect_window_incremental(state, [frame[0]] * 2, frame_id=33)
+        self.assertEqual(state["group_count"], 10)  # f=33 新增一组
+        self.assertIsNot(state["result"], cached)
+        self.assertEqual(state["window_end"] - state["window_start"] + 1, 28)
+
+    def test_validates_inputs(self) -> None:
+        """非法参数与输入应抛出 ValueError。"""
+        with self.assertRaises(ValueError):
+            create_incremental_state(make_params(group_size=1))
+        with self.assertRaises(ValueError):
+            create_incremental_state(make_params(min_frames=0))
+        with self.assertRaises(ValueError):
+            create_incremental_state(make_params(block_count=0))
+
         params = make_params(block_count=2)
-        buffer = HistoryBuffer(params.block_count, params.history)
-
+        state = create_incremental_state(params)
         with self.assertRaises(ValueError):
-            buffer.push_frame([1.0])
+            detect_window_incremental(state, [1.0], frame_id=0)
+        with self.assertRaises(ValueError):
+            detect_window_incremental(state, [1.0, 2.0], frame_id=-1)
 
-        for frame_id in range(params.history):
-            buffer.push_frame([1.0, 2.0], frame_id=frame_id)
-        self.assertIsNotNone(buffer.detect(params))
-
-        buffer.reset()
-        self.assertIsNone(buffer.detect(params))
-        self.assertIsNone(buffer.latest_frame_id)
+    def test_reset_clears_state(self) -> None:
+        """reset 后回到未就绪状态。"""
+        params = make_params(block_count=2, min_frames=30)
+        frame = [6000.0, 9000.0, 5000.0]
+        state = create_incremental_state(params)
+        for i in range(28):
+            detect_window_incremental(state, [frame[i % 3]] * 2, frame_id=i)
+        self.assertIsNotNone(state["result"])
+        reset_incremental_state(state)
+        self.assertIsNone(state["result"])
+        self.assertIsNone(
+            detect_window_incremental(state, [frame[0]] * 2, frame_id=0)
+        )
 
 
 if __name__ == "__main__":

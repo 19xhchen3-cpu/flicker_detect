@@ -28,7 +28,8 @@ API 接口层  app/api.py
 约束：
 
 - API 层只做编排、状态和序列化，不包含检测算法本身。
-- `moudle1.py` 不修改，只接收解析好的 `DetectorParameters`。
+- `moudle1.py` 只暴露纯函数接口（流式增量），接收解析好的
+  `DetectorParameters`。
 - 使用 Python 标准库（`http.server` / `json` / `threading`），不引入框架。
 
 ## 3. 接口清单
@@ -78,7 +79,8 @@ API 接口层  app/api.py
    - 校验前端显式传入的阈值并覆盖默认值；
    - `group_size <= 0`（未配置组合）返回 `invalid_params`；
    - 构造冻结的 `DetectorParameters`。
-4. 把 `DetectorParameters` 交给 `moudle1.HistoryBuffer.detect(params)`。
+4. 用 `moudle1.create_incremental_state(params)` 创建持久状态，逐帧调用
+   `moudle1.detect_window_incremental(state, blocks, frame_id)`。
 
 `moudle1` 只按需读取 `params` 的字段：
 
@@ -227,12 +229,15 @@ GET /api/v1/sessions/a1b2c3/frames/29?fps=30&detection_frequency=50
 ## 7. 下接 moudle1 的方式
 
 - 会话保存逐帧块亮度：`blocks[frame][block]`，服务端内存约 `192 × 帧数` 个浮点数。
-- 每次检测构造 `moudle1.HistoryBuffer(block_count, history)`，逐帧
-  `push_frame` 后调 `buffer.detect(params)` 得到块级结果。
+- 每次检测用 `moudle1.create_incremental_state(params)` 创建持久状态，
+  逐帧调 `moudle1.detect_window_incremental(state, blocks, frame_id)`
+  得到块级结果；相位锁定窗口由状态中的 `window_start` / `window_end`
+  给出（见 docs/moudle1_optimization.md 4.1）。
 - 布局、窗口极差/比值、逐组诊断由 API 层的小函数生成：
   - `_window_layout(H, group_size)`：分组布局；
   - `_group_view(blocks, params)`：逐块逐组诊断。
-- 这些辅助函数从现有 `app/server.py` 平移过来，`moudle1.py` 保持不变。
+- 这些辅助函数从现有 `app/server.py` 平移过来，`moudle1.py` 保持纯逻辑、
+  不感知 HTTP。
 
 ## 8. 文件结构
 
@@ -241,7 +246,7 @@ app/
   api.py          # API 层（单文件，纯标准库：路由、会话、参数解析、编排）
   server.py       # 静态页面服务，把 /api/v1/* 交给 api.py
 flicker_detect/
-  moudle1.py      # 核心检测（不改动）
+  moudle1.py      # 核心检测（纯函数，流式增量）
   detector_config.py
   preprocess.py
 docs/
