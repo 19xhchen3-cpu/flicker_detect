@@ -90,22 +90,23 @@ def detect_window(
 
         # 本块局部缓冲，对应 C++ 的栈上固定数组
         block_amp = [0.0] * (G * P)
+        block_sign = [0] * (G * P)
         closure = [0.0] * G
         amp_group_ok = [0] * G
         group_valid = [0] * G
+        pattern = [0] * G
         valid_codes = []      # 与 valid_groups 平行：第 i 个有效组的符号模式码
         valid_groups = []     # 第 i 个有效组的全局组号
         dominant_groups = []
         best_size = 0
         best_code = -1
 
-        # ---------- 1. 分组、特征、K-of-N、斜率、符号编码与计数 ----------
+        # ---------- 1. 分组、特征、K-of-N、斜率、编码与计数 ----------
         for g in range(G):
             start = group_starts[g]
             tail = group_starts[g] + P
             pass_count = 0
             amp_reached = False
-            code = 0            # 符号模式码在位置循环内直接累加
 
             for p in range(P):
                 d = (
@@ -113,23 +114,20 @@ def detect_window(
                     - history[hbase + slot_order[start + p]]
                 )
                 a = abs(d)
-                block_amp[g * P + p] = a
-
-                # 符号 digit：-1 -> 0, 0 -> 1, +1 -> 2，直接累加进模式码
+                idx = g * P + p
+                block_amp[idx] = a
                 if d > SIGN_ZERO_EPSILON:
-                    digit = 2
+                    block_sign[idx] = 1
                 elif d < -SIGN_ZERO_EPSILON:
-                    digit = 0
+                    block_sign[idx] = -1
                 else:
-                    digit = 1
-                code = code * 3 + digit
+                    block_sign[idx] = 0
 
                 # K-of-N 提前退出只跳过阈值比较，不跳过特征构建
-                if k_value > 0 and not amp_reached:
-                    if a > min_group_amp:
-                        pass_count += 1
-                        if pass_count >= k_value:
-                            amp_reached = True
+                if k_value > 0 and not amp_reached and a > min_group_amp:
+                    pass_count += 1
+                    if pass_count >= k_value:
+                        amp_reached = True
 
             first_slot = slot_order[start]
             tail_slot = slot_order[tail]
@@ -143,15 +141,19 @@ def detect_window(
 
             group_valid[g] = slope_ok
 
-            # 有效组当场完成符号模式计数（原独立计数循环并入此处）
+            # 有效组才执行条件编码短循环，避免为斜率不合格组浪费编码
             if group_valid[g]:
+                code = 0
+                for p in range(P):
+                    # -1 -> 0, 0 -> 1, +1 -> 2
+                    code = code * 3 + (block_sign[g * P + p] + 1)
+                pattern[g] = code
                 valid_codes.append(code)
                 valid_groups.append(g)
                 if stamps[code] != b:
                     stamps[code] = b
                     counts[code] = 0
                 counts[code] += 1
-                # 平票时保留最早出现的组，只在严格更大时更新
                 if counts[code] > best_size:
                     best_size = counts[code]
                     best_code = code
@@ -233,8 +235,10 @@ def detect_window(
 - `group_starts` 在函数内部计算一次。
 - 每个 block 只遍历自己的历史区间 `history[b * H + ...]`。
 - 每个 `(group, position)` 计算相邻帧亮度差 `d`，得到 `amp` 和符号 digit。
-- 符号模式码 `code = code * 3 + digit` 在位置循环内直接累加，不再保存
-  `sign` 数组，也不存在第二遍符号编码扫描。
+- 符号模式编码保留为“斜率门通过后的条件短循环”，只对有效组再扫一遍 `P`
+  个位置；不把编码合并进位置循环，避免为斜率不合格组也付出编码成本。
+- 若未来 profiling 证明第二遍循环开销才是瓶颈，再改为位置循环内直接累加
+  `code = code * 3 + digit`，并同步去掉 `block_sign/pattern` 数组。
 - `closure` 直接取周期组首尾帧亮度差 `last - first`，不再逐位置累加 diff。
 
 ### 4.2 K-of-N 提前退出
@@ -255,16 +259,16 @@ def detect_window(
 ### 4.4 主导符号模式
 
 - 只统计 `group_valid` 的组。
-- 每个组的符号序列编码成一个小整数；编码在阶段 1 的位置循环内完成，计数在组
-  通过斜率门后立即进行，不存在独立的计数循环。
+- 每个组的符号序列编码成一个小整数；编码保留为有效组上的条件短循环，计数在
+  组通过斜率门后立即进行，不再有独立的计数循环。
 - `counts` 按码统计；`stamps[code] != b` 时先把该码计数清零，代替块尾整表清零，
   避免跨块计数残留。
-- 平票时保留先达到最大计数的模式，只在 `counts[code] > best_size` 时更新。
+- 只在 `counts[code] > best_size` 时严格更新 best_size 与 best_code。
 - `valid_count == 0` 时该块直接判定不通过。
 - 不能提前退出计数循环：`best_size` 必须为最终值（`flip_count` 诊断量与 CV 的
   成员收集都依赖它），运行期无法证明剩余组不会改变计数结果，提前退出会导致
   漏判或换掉主导类。
-- 安全剪枝（可选实现）：`min_match_groups > 0` 且
+- 安全剪枝（计算时间优先实现）：`min_match_groups > 0` 且
   `valid_group_count <= min_match_groups` 时，`best_size <= valid_group_count`
   恒成立，`count_pass` 必为假，可整块跳过计数与 CV；仅当不需要精确
   `flip_count`/`sign_flip_ratio` 诊断量时才能连计数一起跳过。
@@ -275,6 +279,8 @@ def detect_window(
 - 只对主导组计算。
 - 主导成员的收集（`valid_codes[i] == best_code`）与振幅求和合并为一遍遍历，
   不再单独扫描一遍有效组。
+- 计算时间优先时可进一步用 Welford 单趟统计，在收集主导组的同时维护均值与
+  平方偏差和，省掉第二趟 `variance_sum` 遍历；方差仍取 `ddof=0` 总体方差。
 - 只有 `mean_amp > min_group_amp` 的位置参与 CV。
 - 当 `k_value == 0` 时，按 4.2 的约定 `min_group_amp` 为 0，等价于所有平均振幅
   非零的位置都参与 CV。
@@ -312,6 +318,20 @@ def detect_window(
   短路只跳过符号模式计数与 CV。
 - 任一诊断量被请求时不能走该分支，否则诊断输出会与完整路径不一致。
 
+### 4.8 计算时间优先的优化顺序
+
+- 第一优先：安全剪枝。`min_match_groups > 0` 且
+  `valid_group_count <= min_match_groups` 时整块跳过计数与 CV，收益随
+  `min_match_groups` 增大而增加。
+- 第二优先：CV 单趟统计。主导成员收集、振幅求和、方差统计合并为一趟
+  `O(G×P)` 遍历，优先采用 Welford 保持数值稳定。
+- 第三优先：流式增量检测。当前每次调用都对完整历史窗口重算，跨帧复用已算过
+  的分组、符号编码与计数是更大的时间收益来源，后续单独设计。
+- 第四优先：C++ 数值替换。`sqrt` 改平方比较、浮点改整数/定点、固定 `P`
+  时展开位置循环。
+- 最后才是编码合并。只有 profiling 证明“第二遍编码循环的开销”是实际瓶颈时，
+  才把编码并入位置循环；该改动会增加斜率不合格组的无用编码计算。
+
 ## 5. 需要保持的边界语义
 
 - `group_count = floor((H - 1) / P)`。
@@ -319,17 +339,7 @@ def detect_window(
 - `amp > min_group_amp` 为严格大于。
 - `pass_count >= k_value` 为大于等于。
 - `abs(slope) <= slope_max` 为小于等于。
-- 主导模式平票时选择先达到最大计数的模式（`counts[code] > best_size` 严格
-  更新，即该模式第 `best_size` 个成员在组顺序中最先出现）。
-- 主导模式计数在阶段 1 内按组顺序即时进行，`stamps` 块标记不改变组间顺序，
-  tie-break 行为不变。
-- fedetect_moudle 的 NumPy 等价类实现平票时保留最早枚举的候选类（最早成员
-  组号最小的类），与上述"先达到最大计数"在特殊排列（如 B,A,B,A,A,B）下可能
-  选出不同的主导类；两者 `flip_count` 一致，但收集给 CV 的组不同，判定结果
-  可能不同（已用构造反例验证：`same_pattern_ratio=0.3` 时两个实现
-  `block_flags` 一个为 0 一个为 1）。
-- 只要 `same_pattern_ratio >= 0.5`（配合严格大于比较），平票场景（并列最大
-  类占比至多 1/2）必被比例门槛拒绝，不会进入平票分支；默认 0.8 已满足该防线。
+- 主导模式计数在阶段 1 内按组顺序即时进行，`stamps` 块标记不改变组间顺序。
 - `best_size > min_match_groups` 为严格大于。
 - `sign_flip_ratio > same_pattern_ratio` 为严格大于。
 - CV 使用总体标准差 `ddof=0`。
@@ -352,8 +362,9 @@ def detect_window(
 ## 6. 后续 C++ 映射
 
 - `history` 可用 `std::vector<uint16_t>` 或固定数组，长度为 `B * H`。
-- block 内的 `block_amp/closure/valid_codes` 可以直接用栈上固定数组；
-  不再需要 `block_sign` 与 `pattern` 数组。
+- block 内的 `block_amp/block_sign/pattern/closure/valid_codes` 可以直接用栈上
+  固定数组；若未来改为位置循环内直接累加 digit，再移除 `block_sign` 与
+  `pattern` 数组。
 - `counts` 与 `stamps` 大小固定为 `3^P`，当前 `P=3` 时为 27；块间用
   `stamps[code] != b` 标记代替整表清零，不再需要 `touched` 重置循环。
 - `group_starts` 可在函数内计算一次，或由调用方传入。

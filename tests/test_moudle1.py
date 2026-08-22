@@ -165,6 +165,85 @@ class PureLogicDetectorTest(unittest.TestCase):
                 existing = run_existing(history, params)
                 assert_results_equal(self, pure, existing)
 
+    def test_safe_pruning_skips_guaranteed_failures_only(self) -> None:
+        # H=30、group_size=4 时最多可形成 G=9 个有效组。
+        # 块 0 只构造 2 个有效组（等于 min_match_groups），数量门槛必不通过，
+        # 无诊断量时整块跳过计数与 CV；块 1 有 9 个同模式有效组，走完整路径。
+        params = make_params(block_count=2, min_frames=30)
+        H = params.history
+
+        # 块 0：帧 2..8 震荡（组 0/1 有效），帧 9..29 恒定（组 2..8 被 K-of-N 拒绝）。
+        block0 = [1000.0] * H
+        for h, value in zip(
+            range(2, 9),
+            [1000.0, 1020.0, 980.0, 1000.0, 1020.0, 980.0, 1000.0],
+        ):
+            block0[h] = value
+        # 块 1：完整周期信号，9 个有效组全部同模式。
+        block1 = [20.0, 40.0, 0.0] * (H // 3) + [20.0]
+        history = [[block0[h], block1[h]] for h in range(H)]
+
+        # 完整路径（带诊断）：计数必须照常执行，flip_count 反映真实 best_size。
+        pure_full = run_pure(history, params)
+        existing_full = run_existing(history, params)
+        assert_results_equal(self, pure_full, existing_full)
+        self.assertEqual(pure_full["block_flags"], [0, 1])
+        self.assertEqual(pure_full["flicker_block_num"], 1)
+        self.assertEqual(pure_full["flip_count"], [2, 9])
+        self.assertEqual(pure_full["sign_flip_ratio"], [1.0, 1.0])
+
+        # 剪枝路径（无诊断）：跳过计数与 CV，判定结果与完整路径一致；
+        # 块 0 被剪枝后不残留计数状态，块 1 仍能正常检出。
+        B = params.block_count
+        history_flat = [0.0] * (B * H)
+        for h, frame in enumerate(history):
+            for b, value in enumerate(frame):
+                history_flat[b * H + h] = float(value)
+
+        block_flags = [0] * B
+        flicker_block_num = detect_window(
+            history_flat,
+            list(range(H)),
+            H,
+            B,
+            params.group_size,
+            params.y_max * params.min_group_amp_ratio,
+            2,  # k_value = ceil(3 * 0.5)
+            params.slope_max,
+            params.min_match_groups,
+            params.same_pattern_ratio,
+            params.max_group_amp_cv,
+            block_flags,
+        )
+        self.assertEqual(block_flags, [0, 1])
+        self.assertEqual(flicker_block_num, 1)
+
+    def test_cv_sqrt_deferred_to_final_compare_matches_existing_pipeline(self) -> None:
+        # 块 0：振幅稳定，CV≈0，通过；块 1：符号模式一致但振幅逐组漂移，
+        # max_pos_cv≈0.49 > 0.4，CV 门必须拒绝。平方累计 + 末尾开平方
+        # 的判定与诊断必须和现有链路一致。
+        params = make_params(block_count=2, min_frames=30)
+        H = params.history
+
+        block0 = [20.0, 40.0, 0.0] * (H // 3)
+        block1 = [1000.0] * H
+        for g in range(9):
+            s = 2 + 3 * g
+            up = 50.0 + 40.0 * g
+            down = 100.0 + 80.0 * g
+            block1[s] = 1000.0
+            block1[s + 1] = 1000.0 + up
+            block1[s + 2] = 1000.0 + up - down
+            block1[s + 3] = 1000.0
+        history = [[block0[h], block1[h]] for h in range(H)]
+
+        pure = run_pure(history, params)
+        existing = run_existing(history, params)
+        assert_results_equal(self, pure, existing)
+        self.assertEqual(pure["block_flags"], [1, 0])
+        self.assertGreater(pure["diff_cv"][1], params.max_group_amp_cv)
+        self.assertFalse(math.isnan(pure["diff_cv"][0]))
+
     def test_history_buffer_ring_matches_sliding_windows(self) -> None:
         params = make_params(block_count=2)
         rng = np.random.RandomState(7)

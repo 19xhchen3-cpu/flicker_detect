@@ -13,6 +13,8 @@
 - 检测算法核心链路已编码并通过单元测试，静态场景分组检测已落地。
 - 前端工作台已支持视频上传、预处理、检测叠加、历史亮度多块对比、悬停诊断和手动重算。
 - 前端已合并为单一工作台，通过导航栏切换“视频检测”和“频闪仿真”。
+- 当前范围：只做 30fps 检测；不实现移动端 v3（Goertzel 频域方案，见
+  `docs/flicker_v3_implementation.md`），其余 fps 的参数组合暂不补齐。
 
 ## 设计构思
 
@@ -151,7 +153,7 @@
 - 最大等价类达到模式复现比例要求后，才被标记为主导模式。
 - 主导模式对应组数记为 `flip_count`，且必须超过最少匹配组数。
 - 门槛通过后，直接按 `class_id[group] == best_candidate` 设置组级匹配标志，不再重新扫描 `sign_matrix` 比较每个位置。
-- 优化必须保持严格大于比较和“并列时选择最早候选组”的 tie-break 行为，确保检测结果不变。
+- 优化必须保持严格大于比较，确保检测结果不变。
 - 复杂度：多数组属于相同模式时接近 `O(G × P)`；每个组都不同的极端情况下最坏为 `O(G^2 × P)`。后续可把符号序列编码后用哈希计数降到 `O(G × P)`。
 - `flip_count` 理解为主导等价类中的组数；复现比例阈值由 `same_pattern_ratio` 控制，最少匹配组数由 `min_match_groups` 控制。
 - 已确认：候选组需同时通过 K-of-N 和闭合斜率门；`same_pattern_ratio` 的分母为全部有效组；`flip_count > min_match_groups`。
@@ -218,15 +220,16 @@
 - `fa = 0` 等有问题的频率/帧率组合通过配置表规避，算法不检测这些组合。
 - `avg_ratio_diff` 和 `avg_delta_diff` 按原始帧亮度的滑动窗口计算：比值取窗口最大值/最小值，极差取窗口最大值减最小值。
 - `slope_max = 0` 只禁用闭合斜率门，K-of-N 振幅门仍然生效；Python 与前端已统一该行为。
-- 主导模式平票语义：moudle1 计数版取"先达到最大计数的模式"（`>` 严格更新）；fedetect 等价类版取"最早枚举的候选类"，特殊排列（如 B,A,B,A,A,B）下可能选出不同主导类，导致 CV 结果与最终判定不同；`same_pattern_ratio >= 0.5` 时平票必被比例门槛拒绝（默认 0.8 已满足）。
 - 提前退出主导模式计数循环不可行：`best_size` 需为最终值（供 `flip_count` 诊断与 CV 成员收集使用）；安全剪枝为 `min_match_groups > 0` 且 `valid_group_count <= min_match_groups` 时整块跳过计数与 CV，阈值越高省得越多。
 - `min_match_groups` 与 `same_pattern_ratio` 约束同一量 `best_size`，等效 `best_size > max(min_match_groups, ratio × valid_count)`；有效组多时比例门槛主导，组少时数量门槛主导，只调一个会被另一个覆盖。
+- 计算时间优先优化顺序已调整为：安全剪枝 -> CV 单趟统计（Welford）-> 流式增量检测 -> C++ 数值替换；符号编码保留条件短循环，编码合并仅在 profiling 证明第二遍循环为瓶颈后实施。
 
 ### 当前参数与待办状态
 
 - 默认参数已填写，`PARAMETER_TABLE` 不再全 0；`y_max` 已改为 `y_max_bit`，由 `DetectorParameters.y_max` 换算满量程。
 - `diff_window_size` 已确定复用 `history = min_frames`。
-- 参数矩阵仍缺少大部分 `group_size`：当前仅 30fps 的 50/100/125/200/500 Hz 有值，其余为 0。
+- 参数矩阵只维护 30fps 的 50/100/125/200/500 Hz 档位（`group_size=4`），
+  其余 fps 组合保持 0，不在当前范围。
 - 待办：用仿真引擎生成已知频闪数据，对检测模块做自动化验证。
 - 待办：置信度模型和运动场景方案。
 - 待办：`fedetect_moudle.main()` 目前只输出分组和特征形状，尚未输出最终 `block_flags`。

@@ -179,6 +179,20 @@ def detect_window(
                 valid_group_count += 1
 
         # ---------- 2. 主导符号模式 ----------
+        # 安全剪枝：best_size 不可能超过 valid_group_count，因此当
+        # min_match_groups > 0 且 valid_group_count <= min_match_groups 时，
+        # count_pass 必为假，该块不可能通过判定。只有需要精确
+        # flip_count / sign_flip_ratio 诊断量时才保留计数；否则计数与
+        # CV 一起跳过（CV 在 dominant_ok 为假时本就不会执行）。
+        if (
+            min_match_groups > 0
+            and valid_group_count <= min_match_groups
+            and flip_count is None
+            and sign_flip_ratio is None
+        ):
+            block_flags[b] = 0
+            continue
+
         # 遍历全部的有效组，找到出现次数最多的那个组
         for local_index in range(valid_group_count):
             g = valid_group_indices[local_index]
@@ -201,6 +215,7 @@ def detect_window(
             valid_group_count > 0 and count_pass and ratio_pass
         )
 
+        #记录当前块的一些数据
         if flip_count is not None:
             flip_count[b] = best_size
         if sign_flip_ratio is not None:
@@ -219,6 +234,7 @@ def detect_window(
         block_ok = False
         if dominant_count > 0:
             d_count = dominant_count
+            # 第一轮，先计算平均值
             for p in range(P):
                 sum_amp[p] = 0.0
             for local_index in range(dominant_count):
@@ -229,13 +245,14 @@ def detect_window(
                 mean_amp[p] = sum_amp[p] / d_count
 
             valid_position_count = 0
+            # 第二轮，计算相对均值的差的平方和
             for p in range(P):
                 if mean_amp[p] > min_group_amp:
                     valid_positions[valid_position_count] = p
                     valid_position_count += 1
 
             if valid_position_count > 0:
-                max_pos_cv = 0.0
+                max_pos_cv_sq = 0.0
                 mean_sum = 0.0
 
                 for vi in range(valid_position_count):
@@ -247,22 +264,27 @@ def detect_window(
                         delta = block_amp[g * P + p] - mean
                         variance_sum += delta * delta
 
-                    # 总体方差 ddof=0，与现有 Python 实现一致。
                     variance = variance_sum / d_count
-                    std = sqrt(max(variance, 0.0))
-                    pos_cv = std / mean
-                    max_pos_cv = max(max_pos_cv, pos_cv)
                     mean_sum += mean
+                    # 先以平方形式累计最大值：pos_cv² = variance / mean²。
+                    # sqrt 单调递增，max(sqrt(x)) == sqrt(max(x))，
+                    # 因此开平方推迟到最终比较时做一次，省掉每个位置一次 sqrt。
+                    pos_cv_sq = variance / (mean * mean)
+                    if pos_cv_sq > max_pos_cv_sq:
+                        max_pos_cv_sq = pos_cv_sq
 
                 if mean_abs_diff is not None:
                     mean_abs_diff[b] = mean_sum / valid_position_count
                 if diff_cv is not None:
-                    diff_cv[b] = max_pos_cv
+                    diff_cv[b] = sqrt(max_pos_cv_sq)
 
                 if max_group_amp_cv == 0:
                     block_ok = dominant_ok
                 else:
-                    block_ok = dominant_ok and max_pos_cv <= max_group_amp_cv
+                    block_ok = (
+                        dominant_ok
+                        and sqrt(max_pos_cv_sq) <= max_group_amp_cv
+                    )
             elif max_group_amp_cv == 0:
                 block_ok = dominant_ok
 
