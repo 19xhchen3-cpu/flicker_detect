@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """API 接口层：上接任意前端，下接 moudle1 等核心模块。
 
-纯 Python 标准库实现，只做四件事：
+以 Python 标准库为主（帧缩略图 JPEG 编码用 OpenCV），只做四件事：
 1. 路由：/api/v1/* 的简单 if 分支；
 2. 会话管理：dict + 锁，按 session_id 保存视频块亮度和元数据；
 3. 参数解析：查 detector_config 参数表，校验前端覆盖值；
@@ -11,12 +11,15 @@ from __future__ import annotations
 moudle1 只暴露纯函数（流式增量检测），API 层不包含检测算法本身。
 """
 
+import base64
 import itertools
 import json
 import math
 import re
 import tempfile
 import threading
+
+import cv2
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -555,10 +558,15 @@ def _stream_convert(
 
     blocks: list[list[float]] = []
     try:
-        for frame in iter_video_frames(video_path, metadata):
+        for frame in iter_video_frames(
+            video_path,
+            metadata,
+            include_source_gray=True,
+        ):
             blocks.append(frame.blocks.tolist())
             total = metadata.frame_count
             percent = (frame.frame_id / total * 100.0) if total else 0.0
+            original_b64 = _encode_gray_thumbnail(frame.source_gray)
             _write_line(
                 handler,
                 {
@@ -570,6 +578,7 @@ def _stream_convert(
                     "max": frame.max_brightness,
                     "mean": frame.mean_brightness,
                     "blocks": frame.blocks.tolist(),
+                    "original": original_b64,
                 },
             )
     except BrokenPipeError:
@@ -591,6 +600,28 @@ def _stream_convert(
     session["blocks"] = blocks
     _write_line(handler, {"type": "done", "processed": len(blocks)})
     _write_chunk(handler, b"")
+
+
+def _encode_gray_thumbnail(gray) -> str | None:
+    """把原灰度帧压缩成 640 宽 JPEG base64，供前端叠加显示亮块。"""
+    if gray is None:
+        return None
+    height, width = gray.shape
+    thumb_width = 640
+    thumb_height = max(1, round(thumb_width * height / width))
+    thumb = cv2.resize(
+        gray,
+        (thumb_width, thumb_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        thumb,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 70],
+    )
+    if not ok:
+        return None
+    return base64.b64encode(encoded).decode("ascii")
 
 
 def _detect_all(session: dict[str, Any], body: dict[str, Any]) -> dict:

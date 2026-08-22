@@ -703,9 +703,26 @@
     const cols = metadata.cols;
     const rows = metadata.rows;
     const yMax = metadata.y_max || 16383;
+    // 浏览器无法解码视频（如 HEVC 无解码器）时走本函数兜底：
+    // 直接以块亮度图作为画面，并同样应用“亮块不透明度/检测块不透明度”。
+    const width = 640;
+    const height = Math.max(
+      1,
+      Math.round((width * metadata.height) / metadata.width),
+    );
     const canvas = previewCanvas;
     const ctx = canvas.getContext("2d");
-    const image = ctx.createImageData(cols, rows);
+    canvas.width = width;
+    canvas.height = height;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, width, height);
+
+    // 亮块图（cols x rows），按透明度叠加到黑色底上。
+    const blockCanvas = document.createElement("canvas");
+    blockCanvas.width = cols;
+    blockCanvas.height = rows;
+    const blockCtx = blockCanvas.getContext("2d");
+    const image = blockCtx.createImageData(cols, rows);
 
     for (let i = 0; i < blocks.length; i += 1) {
       const normalized = Math.min(1, Math.max(0, Number(blocks[i]) / yMax));
@@ -717,9 +734,16 @@
       image.data[offset + 3] = 255;
     }
 
-    canvas.width = cols;
-    canvas.height = rows;
-    ctx.putImageData(image, 0, 0);
+    blockCtx.putImageData(image, 0, 0);
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = Number(blockOpacityInput.value) / 100;
+    ctx.drawImage(blockCanvas, 0, 0, width, height);
+    ctx.globalAlpha = 1;
+    ctx.imageSmoothingEnabled = true;
+
+    drawDetectedBlocks(ctx, width, height);
+    drawBlockGrid(ctx, width, height);
   }
 
   function drawGrayscaleVideo(ctx, width, height) {
@@ -903,9 +927,17 @@
     const groups =
       detect && Array.isArray(detect.groups) ? detect.groups : [];
     if (groups.length > 0) {
+      // group_dominant/group_valid 只有单帧详情接口返回；/detect 的紧凑
+      // 结果没有这两个字段，详情请求返回前必须判空，避免整条绘制链路中断。
+      const dominantRows = Array.isArray(detect.group_dominant)
+        ? detect.group_dominant
+        : [];
+      const validRows = Array.isArray(detect.group_valid)
+        ? detect.group_valid
+        : [];
       for (const item of series) {
-        const dominantFlags = detect.group_dominant[item.blockIndex];
-        const validFlags = detect.group_valid[item.blockIndex];
+        const dominantFlags = dominantRows[item.blockIndex];
+        const validFlags = validRows[item.blockIndex];
         if (!dominantFlags || !validFlags) continue;
         for (let g = 0; g < groups.length; g += 1) {
           const startX = px(groups[g].start_frame);
