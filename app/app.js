@@ -1,7 +1,6 @@
 (() => {
   "use strict";
 
-  const SIGN_ZERO_EPSILON = 1e-4;
   const HISTORY_COLORS = [
     "#2563eb",
     "#16a34a",
@@ -59,6 +58,9 @@
   let sourceObjectUrl = null;
   let currentFrameId = null;
   let detectionVersion = 0;
+  let frameDetailVersion = 0;
+  let detailCache = new Map();
+  let lastMouseEvent = null;
   let preprocessDirty = false;
   let selectedHistoryBlocks = new Set();
   let detectorOptions = [];
@@ -74,6 +76,8 @@
     detectionResults = [];
     currentDetect = null;
     currentFrameId = null;
+    detailCache.clear();
+    frameDetailVersion += 1;
     preprocessDirty = false;
     if (sourceObjectUrl) {
       URL.revokeObjectURL(sourceObjectUrl);
@@ -145,8 +149,14 @@
     if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
   });
 
-  previewCanvas.addEventListener("mousemove", handlePreviewMouseMove);
-  previewCanvas.addEventListener("mouseleave", hideBlockTooltip);
+  previewCanvas.addEventListener("mousemove", (event) => {
+    lastMouseEvent = event;
+    handlePreviewMouseMove(event);
+  });
+  previewCanvas.addEventListener("mouseleave", () => {
+    lastMouseEvent = null;
+    hideBlockTooltip();
+  });
 
   blockSelectGrid.addEventListener("click", handleHistoryBlockSelect);
 
@@ -194,6 +204,8 @@
     detectionResults = [];
     currentDetect = null;
     currentFrameId = null;
+    detailCache.clear();
+    frameDetailVersion += 1;
     preprocessDirty = false;
     resetProgress();
     resetScrubber();
@@ -377,324 +389,116 @@
     }, 40);
   }
 
-  function runDetection() {
+  async function runDetection() {
     if (!metadata || frameData.length === 0) return;
     const params = readParams();
     const blockCount = metadata.cols * metadata.rows;
-    const history = [];
-    const historyFrameIds = [];
-    const results = [];
-
-    for (let i = 0; i < frameData.length; i += 1) {
-      const frame = frameData[i];
-      if (!frame || !frame.blocks) {
-        results.push(emptyResult(blockCount));
-        continue;
-      }
-      history.push(Float64Array.from(frame.blocks));
-      historyFrameIds.push(frame.frame_id);
-      if (history.length > params.min_frames) history.shift();
-      if (historyFrameIds.length > params.min_frames) historyFrameIds.shift();
-      if (history.length >= params.min_frames) {
-        results[i] = detectWindow(
-          history,
-          params,
-          blockCount,
-          historyFrameIds,
-        );
-      } else {
-        results[i] = emptyResult(blockCount);
-      }
-    }
-
-    detectionResults = results;
-    currentDetect = results[currentFrameId] || null;
-    updateDetectionStats(currentDetect);
-    drawChart();
-    if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
-    drawHistoryCurve();
-    setStatus(
-      `检测完成，共 ${frameData.length} 帧`,
-      stats.textContent,
-    );
-  }
-
-  function detectWindow(history, params, blockCount, frameIds) {
-    const result = emptyResult(blockCount);
-    const groupSize = Math.max(2, Math.round(params.group_size));
-    const groupStride = groupSize - 1;
-    const positionCount = groupStride;
-    const validCount = history.length;
-    const groupCount = validCount > 0 ? Math.floor((validCount - 1) / groupStride) : 0;
-    result.group_count = groupCount;
-    result.position_count = positionCount;
-    if (groupCount <= 0) return result;
-
-    const usedFrames = groupSize + (groupCount - 1) * groupStride;
-    const dropCount = validCount - usedFrames;
-    result.groups = [];
-    for (let g = 0; g < groupCount; g += 1) {
-      const startIndex = dropCount + g * groupStride;
-      const endIndex = startIndex + groupSize - 1;
-      result.groups.push({
-        group_index: g,
-        start_frame: frameIds ? Number(frameIds[startIndex]) : startIndex,
-        end_frame: frameIds ? Number(frameIds[endIndex]) : endIndex,
+    detailCache.clear();
+    frameDetailVersion += 1;
+    setStatus("检测重算中...", stats.textContent);
+    try {
+      const response = await fetch("/api/recompute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fps: metadata.fps_mode, params }),
       });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "检测重算失败");
+      }
+      const payload = await response.json();
+      const results = Array.isArray(payload.results) ? payload.results : [];
+      detectionResults = results.map((result) =>
+        result ? normalizeResult(result) : emptyResult(blockCount),
+      );
+      currentDetect = detectionResults[currentFrameId] || null;
+      updateDetectionStats(currentDetect);
+      drawChart();
+      if (currentFrameId !== null) drawCurrentFrame(currentFrameId);
+      drawHistoryCurve();
+      setStatus(`检测完成，共 ${frameData.length} 帧`, stats.textContent);
+    } catch (error) {
+      setStatus(`检测失败：${error.message}`, "");
     }
-    result.group_amp_pass = Array.from(
-      { length: blockCount },
-      () => new Uint8Array(groupCount),
-    );
-    result.group_slope = Array.from(
-      { length: blockCount },
-      () => new Float64Array(groupCount).fill(NaN),
-    );
-    result.group_valid = Array.from(
-      { length: blockCount },
-      () => new Uint8Array(groupCount),
-    );
-    result.group_dominant = Array.from(
-      { length: blockCount },
-      () => new Uint8Array(groupCount),
-    );
-    result.group_sign = Array.from(
-      { length: blockCount },
-      () => Array.from({ length: groupCount }, () => ""),
-    );
-    const diffMatrix = [];
-    const ampMatrix = [];
-    const signMatrix = [];
+  }
 
-    for (let g = 0; g < groupCount; g += 1) {
-      const diffGroup = [];
-      const ampGroup = [];
-      const signGroup = [];
-      const start = dropCount + g * groupStride;
-      for (let p = 0; p < positionCount; p += 1) {
-        const diff = new Float64Array(blockCount);
-        const amp = new Float64Array(blockCount);
-        const sign = new Int8Array(blockCount);
-        for (let b = 0; b < blockCount; b += 1) {
-          const value = history[start + p + 1][b] - history[start + p][b];
-          diff[b] = value;
-          amp[b] = Math.abs(value);
-          sign[b] = value > SIGN_ZERO_EPSILON ? 1 : (value < -SIGN_ZERO_EPSILON ? -1 : 0);
-        }
-        diffGroup.push(diff);
-        ampGroup.push(amp);
-        signGroup.push(sign);
-      }
-      diffMatrix.push(diffGroup);
-      ampMatrix.push(ampGroup);
-      signMatrix.push(signGroup);
+  function refreshFrameDetail(frameId) {
+    if (!metadata || !detectionResults[frameId]) return;
+    if (detailCache.has(frameId)) {
+      applyFrameDetail(frameId, detailCache.get(frameId));
+      return;
     }
-
-    for (let g = 0; g < groupCount; g += 1) {
-      for (let b = 0; b < blockCount; b += 1) {
-        let pattern = "";
-        for (let p = 0; p < positionCount; p += 1) {
-          const value = signMatrix[g][p][b];
-          pattern += value > 0 ? "+" : value < 0 ? "-" : "0";
+    const params = readParams();
+    const version = ++frameDetailVersion;
+    const query = new URLSearchParams({
+      frame: String(frameId),
+      fps: String(metadata.fps_mode),
+      detection_frequency: String(params.detection_frequency),
+      group_size: String(params.group_size),
+      min_frames: String(params.min_frames),
+      min_match_groups: String(params.min_match_groups),
+      min_group_amp_ratio: String(params.min_group_amp_ratio),
+      min_amp_pos_ratio: String(params.min_amp_pos_ratio),
+      same_pattern_ratio: String(params.same_pattern_ratio),
+      slope_max: String(params.slope_max),
+      max_group_amp_cv: String(params.max_group_amp_cv),
+      y_max_bit: String(params.y_max_bit),
+    });
+    fetch(`/api/detect?${query.toString()}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (!payload || !payload.ready) return;
+        if (payload.frame_id !== frameId || version !== frameDetailVersion) {
+          return;
         }
-        result.group_sign[b][g] = pattern;
-      }
-    }
+        detailCache.set(frameId, payload.result);
+        applyFrameDetail(frameId, payload.result);
+      })
+      .catch(() => {});
+  }
 
-    const minGroupAmp = params.y_max * params.min_group_amp_ratio;
-    const ampGateEnabled = params.min_amp_pos_ratio > 0;
-    const kValue = ampGateEnabled ? Math.ceil(positionCount * params.min_amp_pos_ratio) : 0;
-    result.min_group_amp = minGroupAmp;
-    result.k_value = kValue;
-    result.slope_max = Number(params.slope_max) || 0;
-    result.min_match_groups = Number(params.min_match_groups) || 0;
-    result.same_pattern_ratio = Number(params.same_pattern_ratio) || 0;
-    result.max_group_amp_cv = Number(params.max_group_amp_cv) || 0;
-    const ampGroupOk = Array.from({ length: groupCount }, () => new Uint8Array(blockCount));
+  function applyFrameDetail(frameId, detail) {
+    const target = detectionResults[frameId];
+    if (!target) return;
+    Object.assign(target, normalizeResult(detail));
+    if (frameId !== currentFrameId) return;
+    currentDetect = target;
+    drawHistoryCurve();
+    if (lastMouseEvent) handlePreviewMouseMove(lastMouseEvent);
+  }
 
-    if (ampGateEnabled) {
-      for (let g = 0; g < groupCount; g += 1) {
-        for (let b = 0; b < blockCount; b += 1) {
-          let passCount = 0;
-          for (let p = 0; p < positionCount; p += 1) {
-            if (ampMatrix[g][p][b] > minGroupAmp) passCount += 1;
-          }
-          result.group_amp_pass[b][g] = passCount;
-          result.amp_pass_count[b] = Math.max(
-            result.amp_pass_count[b],
-            passCount,
-          );
-          ampGroupOk[g][b] = passCount >= kValue ? 1 : 0;
-        }
-      }
-    } else {
-      for (let g = 0; g < groupCount; g += 1) ampGroupOk[g].fill(1);
-      result.amp_pass_count.fill(positionCount);
-      result.group_amp_pass.forEach((passes) => passes.fill(positionCount));
-    }
-
-    const slopeGroupOk = Array.from({ length: groupCount }, () => new Uint8Array(blockCount));
-    if (params.slope_max > 0) {
-      for (let b = 0; b < blockCount; b += 1) {
-        for (let g = 0; g < groupCount; g += 1) {
-          if (!ampGroupOk[g][b]) continue;
-          const start = dropCount + g * groupStride;
-          const slope = (history[start + groupStride][b] - history[start][b]) / groupStride;
-          result.group_slope[b][g] = slope;
-          const absSlope = Math.abs(slope);
-          if (!Number.isFinite(result.max_abs_slope[b]) || absSlope > result.max_abs_slope[b]) {
-            result.max_abs_slope[b] = absSlope;
-          }
-          slopeGroupOk[g][b] = absSlope <= params.slope_max ? 1 : 0;
-        }
-      }
-    } else {
-      for (let g = 0; g < groupCount; g += 1) slopeGroupOk[g].set(ampGroupOk[g]);
-    }
-
-    for (let b = 0; b < blockCount; b += 1) {
-      const validIndices = [];
-      for (let g = 0; g < groupCount; g += 1) {
-        if (slopeGroupOk[g][b]) validIndices.push(g);
-      }
-      result.valid_group_count[b] = validIndices.length;
-      for (const g of validIndices) result.group_valid[b][g] = 1;
-
-      let dominantOk = false;
-      let dominantGroups = [];
-      let signFlipRatioValue = 0;
-      let bestSize = 0;
-
-      if (validIndices.length > 0) {
-        const classId = new Int32Array(validIndices.length).fill(-1);
-        const assigned = new Uint8Array(validIndices.length);
-        let bestLocal = -1;
-        let bestRep = -1;
-
-        for (let i = 0; i < validIndices.length; i += 1) {
-          if (assigned[i]) continue;
-          const matches = [];
-          for (let j = i; j < validIndices.length; j += 1) {
-            if (assigned[j]) continue;
-            if (sameSign(signMatrix, validIndices[i], validIndices[j], positionCount, b)) {
-              matches.push(j);
-            }
-          }
-          for (const match of matches) {
-            classId[match] = validIndices[i];
-            assigned[match] = 1;
-          }
-          if (matches.length > bestSize) {
-            bestSize = matches.length;
-            bestLocal = i;
-            bestRep = validIndices[i];
-          }
-        }
-
-        const validCount = validIndices.length;
-        signFlipRatioValue = bestSize / validCount;
-        const countPass = params.min_match_groups === 0 || bestSize > params.min_match_groups;
-        const ratioPass = params.same_pattern_ratio === 0 || signFlipRatioValue > params.same_pattern_ratio;
-        dominantOk = countPass && ratioPass;
-        if (dominantOk) {
-          for (let j = 0; j < validIndices.length; j += 1) {
-            if (classId[j] === bestRep) dominantGroups.push(validIndices[j]);
-          }
-          for (const g of dominantGroups) result.group_dominant[b][g] = 1;
-        }
-      }
-
-      result.sign_flip_ratio[b] = signFlipRatioValue;
-      result.flip_count[b] = bestSize;
-
-      if (dominantGroups.length > 0) {
-        for (const g of dominantGroups) {
-          const start = dropCount + g * groupStride;
-          const slope =
-            (history[start + groupStride][b] - history[start][b]) / groupStride;
-          const absSlope = Math.abs(slope);
-          if (
-            !Number.isFinite(result.max_used_abs_slope[b]) ||
-            absSlope > result.max_used_abs_slope[b]
-          ) {
-            result.max_used_abs_slope[b] = absSlope;
-          }
-        }
-      }
-
-      if (!dominantOk || dominantGroups.length === 0) continue;
-
-      const meanAmp = new Float64Array(positionCount);
-      for (let p = 0; p < positionCount; p += 1) {
-        let sum = 0;
-        for (const g of dominantGroups) sum += ampMatrix[g][p][b];
-        meanAmp[p] = sum / dominantGroups.length;
-      }
-
-      const validPositions = [];
-      for (let p = 0; p < positionCount; p += 1) {
-        if (meanAmp[p] > minGroupAmp) validPositions.push(p);
-      }
-
-      if (validPositions.length === 0) {
-        if (params.max_group_amp_cv === 0) result.block_flags[b] = 1;
-        continue;
-      }
-
-      let maxPosCv = 0;
-      let meanAbsSum = 0;
-      for (const p of validPositions) {
-        const mean = meanAmp[p];
-        let varianceSum = 0;
-        for (const g of dominantGroups) {
-          const delta = ampMatrix[g][p][b] - mean;
-          varianceSum += delta * delta;
-        }
-        const std = Math.sqrt(varianceSum / dominantGroups.length);
-        const cv = std / mean;
-        if (cv > maxPosCv) maxPosCv = cv;
-        meanAbsSum += mean;
-      }
-
-      result.mean_abs_diff[b] = meanAbsSum / validPositions.length;
-      result.diff_cv[b] = maxPosCv;
-      if (params.max_group_amp_cv === 0 || maxPosCv <= params.max_group_amp_cv) {
-        result.block_flags[b] = 1;
+  function normalizeResult(result) {
+    const floatFields = [
+      "sign_flip_ratio",
+      "mean_abs_diff",
+      "diff_cv",
+      "avg_ratio_diff",
+      "avg_delta_diff",
+    ];
+    for (const key of floatFields) {
+      if (Array.isArray(result[key])) {
+        result[key] = Float64Array.from(result[key], (value) =>
+          value == null ? NaN : Number(value),
+        );
       }
     }
-
-    result.flicker_block_num = countOnes(result.block_flags);
-    computeWindowDiagnostics(result, history, params.min_frames);
+    if (Array.isArray(result.block_flags)) {
+      result.block_flags = Uint8Array.from(result.block_flags, (value) =>
+        Number(value) || 0,
+      );
+    }
+    if (Array.isArray(result.valid_group_count)) {
+      result.valid_group_count = Uint8Array.from(
+        result.valid_group_count,
+        (value) => Number(value) || 0,
+      );
+    }
+    if (Array.isArray(result.flip_count)) {
+      result.flip_count = Uint32Array.from(result.flip_count, (value) =>
+        Number(value) || 0,
+      );
+    }
     return result;
-  }
-
-  function sameSign(signMatrix, g1, g2, positionCount, block) {
-    for (let p = 0; p < positionCount; p += 1) {
-      if (signMatrix[g1][p][block] !== signMatrix[g2][p][block]) return false;
-    }
-    return true;
-  }
-
-  function computeWindowDiagnostics(result, history, windowSize) {
-    const blockCount = result.block_flags.length;
-    if (history.length < windowSize) return;
-    const window = history.slice(history.length - windowSize);
-    for (let b = 0; b < blockCount; b += 1) {
-      let minValue = Infinity;
-      let maxValue = -Infinity;
-      for (const frame of window) {
-        if (frame[b] < minValue) minValue = frame[b];
-        if (frame[b] > maxValue) maxValue = frame[b];
-      }
-      result.avg_delta_diff[b] = maxValue - minValue;
-      if (minValue > 0) {
-        result.avg_ratio_diff[b] = maxValue / minValue;
-      } else if (maxValue === 0) {
-        result.avg_ratio_diff[b] = NaN;
-      } else {
-        result.avg_ratio_diff[b] = Infinity;
-      }
-    }
   }
 
   function emptyResult(blockCount) {
@@ -706,11 +510,8 @@
       diff_cv: new Float64Array(blockCount).fill(NaN),
       avg_ratio_diff: new Float64Array(blockCount).fill(NaN),
       avg_delta_diff: new Float64Array(blockCount).fill(NaN),
-      amp_pass_count: new Uint8Array(blockCount),
       valid_group_count: new Uint8Array(blockCount),
       flip_count: new Uint32Array(blockCount),
-      max_abs_slope: new Float64Array(blockCount).fill(NaN),
-      max_used_abs_slope: new Float64Array(blockCount).fill(NaN),
       groups: [],
       group_amp_pass: [],
       group_slope: [],
@@ -728,12 +529,6 @@
     };
   }
 
-  function countOnes(array) {
-    let count = 0;
-    for (const value of array) if (value) count += 1;
-    return count;
-  }
-
   function numberOr(value, fallback) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
@@ -746,6 +541,7 @@
     hideBlockTooltip();
     updateDetectionStats(currentDetect);
     drawHistoryCurve();
+    refreshFrameDetail(frameId);
 
     const frame = frameData[frameId];
     if (frame.original) {
@@ -1290,7 +1086,6 @@
       return lines.join("\n");
     }
 
-    lines.push(`有效组 ${detect.valid_group_count[blockIndex]} / ${detect.group_count}`);
     lines.push(`flip ${detect.flip_count[blockIndex]} / ${detect.min_match_groups}`);
     lines.push(
       `same_pattern_ratio ${formatHistoryNumber(detect.sign_flip_ratio[blockIndex])} / ` +
@@ -1305,27 +1100,36 @@
     }
 
     const groups = Array.isArray(detect.groups) ? detect.groups : [];
-    const groupAmpPass = detect.group_amp_pass[blockIndex] || [];
-    const groupSlope = detect.group_slope[blockIndex] || [];
-    const groupValid = detect.group_valid[blockIndex] || [];
-    const groupDominant = detect.group_dominant[blockIndex] || [];
-    const groupSign = detect.group_sign[blockIndex] || [];
-    for (let g = 0; g < groups.length; g += 1) {
-      const group = groups[g];
-      const ampPass = groupAmpPass[g] ?? 0;
-      const slope = groupSlope[g];
-      const slopeText = Number.isFinite(slope)
-        ? formatHistoryNumber(slope)
-        : "-";
-      const status = groupValid[g] ? "有效" : "无效";
-      const dominant = groupDominant[g] ? "·主导" : "";
-      const sign = groupSign[g] || "-";
-      lines.push(
-        `G${g} 帧${group.start_frame}-${group.end_frame} ` +
-        `amp${ampPass}/${detect.position_count} ` +
-        `slope${slopeText}/${formatHistoryNumber(detect.slope_max)} ` +
-        `${status}${dominant} sign${sign}`,
+    const groupRows = detect.group_valid ? detect.group_valid[blockIndex] : undefined;
+    if (groupRows) {
+      const validCount = groupRows.reduce(
+        (sum, value) => sum + (value ? 1 : 0),
+        0,
       );
+      lines.push(`有效组 ${validCount} / ${detect.group_count}`);
+      const groupAmpPass = detect.group_amp_pass[blockIndex] || [];
+      const groupSlope = detect.group_slope[blockIndex] || [];
+      const groupDominant = detect.group_dominant[blockIndex] || [];
+      const groupSign = detect.group_sign[blockIndex] || [];
+      for (let g = 0; g < groups.length; g += 1) {
+        const group = groups[g];
+        const ampPass = groupAmpPass[g] ?? 0;
+        const slope = groupSlope[g];
+        const slopeText = Number.isFinite(slope)
+          ? formatHistoryNumber(slope)
+          : "-";
+        const status = groupRows[g] ? "有效" : "无效";
+        const dominant = groupDominant[g] ? "·主导" : "";
+        const sign = groupSign[g] || "-";
+        lines.push(
+          `G${g} 帧${group.start_frame}-${group.end_frame} ` +
+          `amp${ampPass}/${detect.position_count} ` +
+          `slope${slopeText}/${formatHistoryNumber(detect.slope_max)} ` +
+          `${status}${dominant} sign${sign}`,
+        );
+      }
+    } else if (groups.length > 0) {
+      lines.push("分组详情加载中...");
     }
 
     lines.push(detect.block_flags[blockIndex] ? "判定：命中" : "判定：未命中");
