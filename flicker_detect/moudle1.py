@@ -155,12 +155,26 @@ def detect_window_incremental(
     new_k = (rel - P) // P
     state["group_count"] += 1
 
-    # ---------- 1. 新组特征（差分/振幅/符号编码/K-of-N/闭合斜率） ----------
+    # ---------- 1. 新组特征（闭合斜率 → 差分/振幅/符号编码/K-of-N） ----------
     # 只有新组需要计算，其余 G-1 组复用循环槽中的缓存。
     start = state["phase_base"] + new_k * P
     group_slot = (new_k % group_cap) * B
+    # 组首尾帧槽只与 start 有关，可提到块循环外复用。
+    start_slot = start % H
+    tail_slot = (start + P) % H
     for b in range(B):
         hbase = b * H
+        # 1a. 周期闭合斜率门（O(1)）：只用组首尾两帧，计算量最小，放最前。
+        # 不合格的组直接记 -1 并 continue 到下一块，整段跳过差分/编码/
+        # 振幅特征构建（显式的“跳出当前块”）。
+        if slope_max > 0:
+            closure = history[hbase + tail_slot] - history[hbase + start_slot]
+            if abs(closure / P) > slope_max:
+                group_pattern[group_slot + b] = -1
+                continue
+
+        # 1b. 差分特征 + 符号编码 + K-of-N 振幅门（O(P)）：只对斜率门
+        # 通过的组计算；K-of-N 提前退出只跳过剩余阈值比较，不跳过编码。
         code = 0
         pass_count = 0
         amp_reached = False
@@ -181,20 +195,10 @@ def detect_window_incremental(
                 pass_count += 1
                 if pass_count >= k_value:
                     amp_reached = True
-
-        # 闭合斜率门；不合格组记 -1，不参与计数与 CV。
         amp_group_ok = k_value == 0 or amp_reached or pass_count >= k_value
-        valid = False
-        if amp_group_ok:
-            if slope_max <= 0:
-                valid = True
-            else:
-                closure = (
-                    history[hbase + (start + P) % H]
-                    - history[hbase + start % H]
-                )
-                valid = abs(closure / P) <= slope_max
-        group_pattern[group_slot + b] = code if valid else -1
+
+        # 振幅门通过才有效；无效组记 -1，不参与计数与 CV。
+        group_pattern[group_slot + b] = code if amp_group_ok else -1
 
     # 窗口未就绪（不足 G 组）时不出结论。
     if state["group_count"] < G:
