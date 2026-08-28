@@ -18,6 +18,7 @@ import math
 import re
 import tempfile
 import threading
+import uuid
 
 import cv2
 from dataclasses import fields
@@ -39,6 +40,7 @@ from flicker_detect.moudle1 import (
     detect_window_incremental,
 )
 from flicker_detect.preprocess import inspect_video, iter_video_frames
+from flicker_detect.sim_video import SimVideoParams, generate_video
 
 ENGINE = FlickerEngine()
 DEFAULT_PARAMS = PARAMETER_TABLE[(30, 50)]
@@ -47,6 +49,11 @@ DEFAULT_PARAMS = PARAMETER_TABLE[(30, 50)]
 SESSIONS: dict[str, dict[str, Any]] = {}
 SESSIONS_LOCK = threading.Lock()
 _SESSION_IDS = itertools.count(1)
+
+# 仿真视频生成产物存储：filename -> Path（临时目录，服务重启即失效）。
+GENERATED_DIR = Path(tempfile.gettempdir()) / "flicker_generated"
+_GENERATED: dict[str, Path] = {}
+_GENERATED_LOCK = threading.Lock()
 
 
 class V1Error(Exception):
@@ -720,6 +727,107 @@ def _frame_detail(
     return {"frame_id": frame_id, "ready": True, "result": jsonable(result)}
 
 
+def _sim_params_from_query(raw: dict[str, str], video_path: str) -> SimVideoParams:
+    """从查询参数构造仿真视频生成参数，缺省用 SimVideoParams 默认值。"""
+
+    def num(key: str, default, cast):
+        value = raw.get(key)
+        if value is None or value == "":
+            return default
+        return cast(value)
+
+    return SimVideoParams(
+        background_video=video_path,
+        output_path=str(GENERATED_DIR / f"gen_{uuid.uuid4().hex[:12]}.mp4"),
+        frames=num("frames", None, int),
+        flicker_frequency=num("flicker_frequency", 50.0, float),
+        flicker_phase=num("flicker_phase", 0.0, float),
+        flicker_amplitude=num("flicker_amplitude", 100.0, float),
+        flicker_dc=num("flicker_dc", 64.0, float),
+        target_radius=num("target_radius", 40, int),
+        trajectory_type=raw.get("trajectory_type", "line"),
+        start_x=num("start_x", None, float),
+        start_y=num("start_y", None, float),
+        velocity_x=num("velocity_x", 0.6, float),
+        velocity_y=num("velocity_y", 0.0, float),
+        sine_amplitude=num("sine_amplitude", 30.0, float),
+        sine_frequency=num("sine_frequency", 0.2, float),
+        waveform=raw.get("waveform", "rectified_sin"),
+        duty_cycle=num("duty_cycle", 0.5, float),
+        cols=num("cols", 16, int),
+        rows=num("rows", 12, int),
+    )
+
+
+def _handle_generate(handler, query: str) -> None:
+    """接收背景视频（原始 body）+ 查询参数，生成频闪视频并登记产物。"""
+    length = int(handler.headers.get("Content-Length", "0"))
+    if length <= 0:
+        raise V1Error(400, "empty_upload", "Empty background video upload.")
+    raw = {key: values[-1] for key, values in parse_qs(query).items()}
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    try:
+        remaining = length
+        while remaining > 0:
+            chunk = handler.rfile.read(min(65536, remaining))
+            if not chunk:
+                raise V1Error(400, "interrupted", "Video upload interrupted.")
+            temp.write(chunk)
+            remaining -= len(chunk)
+        temp.close()
+
+        GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+        params = _sim_params_from_query(raw, temp.name)
+        result = generate_video(params)
+        video_path = Path(result["output_path"])
+        ref_path = Path(result["reference_path"])
+        with _GENERATED_LOCK:
+            _GENERATED[video_path.name] = video_path
+            _GENERATED[ref_path.name] = ref_path
+        reference = json.loads(ref_path.read_text(encoding="utf-8"))
+        _send_json(
+            handler,
+            200,
+            {
+                "status": "ok",
+                "output": {
+                    "video_url": f"/api/v1/generated/{video_path.name}",
+                    "json_url": f"/api/v1/generated/{ref_path.name}",
+                    "codec": result["codec"],
+                    "fps": result["fps"],
+                    "width": result["width"],
+                    "height": result["height"],
+                    "frames": result["frames"],
+                },
+                "derived": reference["derived"],
+                "block_stats": reference["block_stats"],
+            },
+        )
+    finally:
+        temp.close()
+        Path(temp.name).unlink(missing_ok=True)
+
+
+def _handle_generated(handler, name: str) -> None:
+    """回传已生成的视频或参考标签文件。"""
+    with _GENERATED_LOCK:
+        path = _GENERATED.get(name)
+    if path is None or not path.is_file():
+        raise V1Error(404, "not_found", "Generated file not found.")
+    data = path.read_bytes()
+    content_type = (
+        "video/mp4"
+        if path.suffix.lower() == ".mp4"
+        else "application/json; charset=utf-8"
+    )
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
 def _route(handler, path: str, query: str) -> None:
     method = handler.command
     if method == "GET" and path == "/api/v1/options":
@@ -728,6 +836,8 @@ def _route(handler, path: str, query: str) -> None:
         _handle_create_session(handler)
     elif method == "POST" and path == "/api/v1/simulate":
         _handle_simulate(handler)
+    elif method == "POST" and path == "/api/v1/generate":
+        _handle_generate(handler, query)
     elif method == "POST":
         match = re.fullmatch(r"/api/v1/sessions/([^/]+)/video", path)
         if match:
@@ -739,6 +849,10 @@ def _route(handler, path: str, query: str) -> None:
             return
         _send_error(handler, 404, "not_found", "Not found.")
     elif method == "GET":
+        match = re.fullmatch(r"/api/v1/generated/([^/]+)", path)
+        if match:
+            _handle_generated(handler, match.group(1))
+            return
         match = re.fullmatch(r"/api/v1/sessions/([^/]+)/frames/(\d+)", path)
         if match:
             _send_json(

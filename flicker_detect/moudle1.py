@@ -6,9 +6,9 @@ from __future__ import annotations
 嵌入式 C++：核心检测链路不依赖 NumPy/OpenCV，只使用显式循环、一维数组和
 固定 shape。检测语义与 flicker_detect/fedetect_moudle.py 保持对齐。
 
-detect_window_incremental 采用相位锁定 + 跳帧的流式增量实现
-（见 docs/moudle1_optimization.md 4.1）：分组锚定到绝对帧号，每前进
-P 帧新增一组，只在组完成帧重扫判定，其余帧复用上一结论。
+detect_window_incremental 采用相位锁定 + 跳帧的流式增量实现：
+分组锚定到绝对帧号，每前进 P 帧新增一组，只在组完成帧重扫判定，
+其余帧复用上一结论。
 """
 
 from collections.abc import Sequence

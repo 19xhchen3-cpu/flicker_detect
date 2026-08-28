@@ -232,7 +232,7 @@ GET /api/v1/sessions/a1b2c3/frames/29?fps=30&detection_frequency=50
 - 每次检测用 `moudle1.create_incremental_state(params)` 创建持久状态，
   逐帧调 `moudle1.detect_window_incremental(state, blocks, frame_id)`
   得到块级结果；相位锁定窗口由状态中的 `window_start` / `window_end`
-  给出（见 docs/moudle1_optimization.md 4.1）。
+  给出。
 - 布局、窗口极差/比值、逐组诊断由 API 层的小函数生成：
   - `_window_layout(H, group_size)`：分组布局；
   - `_group_view(blocks, params)`：逐块逐组诊断。

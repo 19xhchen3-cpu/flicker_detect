@@ -2,8 +2,7 @@
 
 > 状态：**设计草案，尚未实施**。本文记录"画面中移动目标频闪检测"的需求、
 > 现状问题、能力边界与推荐技术路线，供后续排期实现时直接取用。
-> 相关文档：[moudle1_optimization.md](./moudle1_optimization.md)、
-> [pure_logic_detector_design.md](./pure_logic_detector_design.md)。
+> 相关文档：[pure_logic_detector_design.md](./pure_logic_detector_design.md)。
 
 ## 1. 需求背景
 

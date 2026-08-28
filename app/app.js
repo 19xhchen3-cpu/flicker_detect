@@ -20,8 +20,10 @@
   const recomputeButton = document.getElementById("recomputeButton");
   const navDetect = document.getElementById("navDetect");
   const navSimulate = document.getElementById("navSimulate");
+  const navGenerate = document.getElementById("navGenerate");
   const detectView = document.getElementById("detectView");
   const simulateView = document.getElementById("simulateView");
+  const generateView = document.getElementById("generateView");
   const fileName = document.getElementById("fileName");
   const gammaInput = document.getElementById("gammaInput");
   const colsInput = document.getElementById("colsInput");
@@ -116,18 +118,26 @@
 
   navDetect.addEventListener("click", () => switchView("detect"));
   navSimulate.addEventListener("click", () => switchView("simulate"));
+  navGenerate.addEventListener("click", () => switchView("generate"));
 
   function switchView(view) {
     const showDetect = view === "detect";
+    const showSimulate = view === "simulate";
+    const showGenerate = view === "generate";
     detectView.hidden = !showDetect;
-    simulateView.hidden = showDetect;
+    simulateView.hidden = !showSimulate;
+    generateView.hidden = !showGenerate;
     navDetect.classList.toggle("active", showDetect);
-    navSimulate.classList.toggle("active", !showDetect);
+    navSimulate.classList.toggle("active", showSimulate);
+    navGenerate.classList.toggle("active", showGenerate);
     hideBlockTooltip();
-    if (!showDetect) {
+    if (showSimulate) {
       window.requestAnimationFrame(() => {
         if (window.redrawSimulation) window.redrawSimulation();
       });
+    }
+    if (showGenerate && window.redrawGenerate) {
+      window.requestAnimationFrame(() => window.redrawGenerate());
     }
   }
 

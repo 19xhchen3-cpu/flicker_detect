@@ -18,6 +18,7 @@
     <nav class="app-nav" aria-label="视图切换">
       <button id="navDetect" class="nav-tab active" type="button">视频检测</button>
       <button id="navSimulate" class="nav-tab" type="button">频闪仿真</button>
+      <button id="navGenerate" class="nav-tab" type="button">仿真视频生成</button>
     </nav>
 
     <section id="detectView" class="view">
@@ -229,9 +230,49 @@
         </section>
       </div>
     </section>
+
+    <section id="generateView" class="view" hidden>
+      <div class="gen-layout">
+        <aside class="gen-panel">
+          <header class="gen-panel-header">
+            <h2>仿真视频生成</h2>
+            <button id="genResetButton" type="button" title="重置参数">重置</button>
+          </header>
+          <div class="gen-body">
+            <section class="panel">
+              <h2>背景视频</h2>
+              <input id="genVideoInput" type="file" accept="video/*" hidden>
+              <div class="row">
+                <button id="genLoadButton" type="button">上传视频</button>
+                <span id="genFileName" class="file-name">未选择视频</span>
+              </div>
+              <button id="genGenerateButton" type="button" disabled>生成频闪视频</button>
+            </section>
+            <section class="panel">
+              <h2>光源参数</h2>
+              <div id="genParamRows" class="params"></div>
+            </section>
+          </div>
+        </aside>
+        <section class="gen-workspace">
+          <section class="panel preview-panel">
+            <video id="genVideo" controls muted playsinline preload="auto"></video>
+            <div id="genStatus" class="gen-status">等待上传背景视频</div>
+          </section>
+          <section class="panel">
+            <div class="chart-header">
+              <h2>生成结果</h2>
+              <a id="genDownload" class="gen-download" href="#" download hidden>下载 MP4</a>
+            </div>
+            <div id="genMeta" class="gen-meta"></div>
+          </section>
+        </section>
+      </div>
+    </section>
   </main>
 
   <script src="/app.js"></script>
   <script src="/simulate.js"></script>
+  <script src="/generate.js"></script>
 </body>
 </html>

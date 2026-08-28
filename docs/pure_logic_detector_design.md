@@ -2,7 +2,7 @@
 
 > 注：本文档为历史设计记录。当前生产实现已改为
 > `flicker_detect/moudle1.py` 的 `detect_window_incremental`
-> （相位锁定 + 跳帧的流式增量版，见 docs/moudle1_optimization.md 4.1）；
+> （相位锁定 + 跳帧的流式增量版）；
 > 原"每次对一个完整历史窗口做一次检测"的全量路径已删除。
 
 ## 1. 目的
